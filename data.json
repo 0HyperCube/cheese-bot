@@ -1,25 +1,25 @@
 {
 	"Users": {
-		"709767987242074116":{"PersonalAccount": "0", "SuperUser": false, "Organisations": []},
-		"887020108696920116":{"PersonalAccount": "1", "SuperUser": true,  "Organisations": ["1003", "1005", "1006"]},
-		"888167676512440352":{"PersonalAccount": "3", "SuperUser": false, "Organisations": []},
-		"653127445922316299":{"PersonalAccount": "4", "SuperUser": false, "Organisations": []},
-		"722468356711776269":{"PersonalAccount": "5", "SuperUser": false, "Organisations": []},
-		"895756129026576474":{"PersonalAccount": "6", "SuperUser": false, "Organisations": ["1007"]},
-		"630073509137350690":{"PersonalAccount": "7", "SuperUser": false, "Organisations": ["1002"]},
-		"737928480389333004":{"PersonalAccount": "8", "SuperUser": false, "Organisations": ["1004"]},
-		"762325231925854231":{"PersonalAccount": "9", "SuperUser": false, "Organisations": ["1000", "1001", "1008"]}
+		"709767987242074116":{"PersonalAccount": "0", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": []},
+		"887020108696920116":{"PersonalAccount": "1", "SuperUser": true,  "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": ["1003", "1005", "1006"]},
+		"888167676512440352":{"PersonalAccount": "3", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": []},
+		"653127445922316299":{"PersonalAccount": "4", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": []},
+		"722468356711776269":{"PersonalAccount": "5", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": []},
+		"895756129026576474":{"PersonalAccount": "6", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": ["1007"]},
+		"630073509137350690":{"PersonalAccount": "7", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": ["1002"]},
+		"737928480389333004":{"PersonalAccount": "8", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": ["1004"]},
+		"762325231925854231":{"PersonalAccount": "9", "SuperUser": false, "Mp": true, "LastPay": "2021-10-23T18:02:20Z","Organisations": ["1000", "1001", "1008"]}
 	},
 	"PersonalAccounts": {
 		"0": {"Name": "Adam",					"Balance": 790},
 		"1": {"Name": "Alan",					"Balance": 1050},
-		"3": {"Name": "Chino",					"Balance": 620},
+		"3": {"Name": "Chino",					"Balance": 740},
 		"4": {"Name": "Donny",					"Balance": 620},
-		"5": {"Name": "Elliot F",				"Balance": 790},
-		"6": {"Name": "Elliott",				"Balance": 790},
-		"7": {"Name": "James",					"Balance": 570},
-		"8": {"Name": "Louis",					"Balance": 1350},
-		"9": {"Name": "Twaddle",				"Balance": 690}
+		"5": {"Name": "Elliot F",				"Balance": 910},
+		"6": {"Name": "Elliott",				"Balance": 910},
+		"7": {"Name": "James",					"Balance": 690},
+		"8": {"Name": "Louis",					"Balance": 1470},
+		"9": {"Name": "Twaddle",				"Balance": 810}
 	},
 	"OrganisationAccounts": {
 		"1000": {"Name": "Treasury",			"Balance": 26490},
@@ -35,5 +35,6 @@
 	},
 	"NextPersonal": 10,
 	"NextOrg": 1009,
-	"TaxRate": 10
+	"TaxRate": 10,
+	"MpPay": 200
 }

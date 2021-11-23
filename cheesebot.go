@@ -16,6 +16,8 @@ import (
 type User struct {
 	PersonalAccount string
 	SuperUser       bool
+	Mp              bool
+	LastPay         time.Time
 	Organisations   []string
 }
 
@@ -31,6 +33,7 @@ type Data struct {
 	NextPersonal         int
 	NextOrg              int
 	TaxRate              float64
+	MpPay                int
 }
 
 // Variables used for command line parameters
@@ -73,6 +76,14 @@ func save_data() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	fmt.Print("Saving....")
+}
+
+func periodic_save() {
+	for range time.Tick(time.Minute * 1) {
+		save_data()
+	}
 }
 
 // Called as the first function to run from this module
@@ -83,6 +94,8 @@ func init() {
 
 	// Read the json file
 	read_data()
+
+	go periodic_save()
 }
 
 // Utility for finding an account that could be a user or an organisation account.
@@ -210,6 +223,36 @@ func add_commands(session *discordgo.Session) {
 				},
 			},
 		}, {
+			Name:        "create_org",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Create an organisation.",
+			Options: []*discordgo.ApplicationCommandOption{
+
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "name",
+					Description: "The name of the new organisation",
+					Required:    true,
+				},
+			},
+		}, {
+			Name:        "delete_org",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Delete an organisation.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "organisation",
+					Description: "The organisation you wish to delete (must be owned by you).",
+					Required:    true,
+					Choices:     org_account_choices,
+				},
+			},
+		}, {
+			Name:        "answer_mp_rolecall",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Show you are active and get payed for the day if you are an MP.",
+		}, {
 			Name:        "sudo_set_tax",
 			Type:        discordgo.ChatApplicationCommand,
 			Description: "Set the tax rate.",
@@ -250,6 +293,7 @@ func create_embed(name string, session *discordgo.Session, interaction *discordg
 }
 
 func main() {
+
 	// Create a new Discord session using the provided bot token.
 	session, err := discordgo.New("Bot " + Token)
 	if err != nil {
@@ -380,6 +424,28 @@ func user_has_org(user *discordgo.User, org string, delete_if_found bool) bool {
 	return false
 }
 
+// Conducts a transaction. Returns `Sucsess bool`, `error string` and `tax int`
+func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string) (bool, string, int) {
+	// Check for negatives
+	if amount < 0 {
+		return false, fmt.Sprint("**ERROR:** Cannot pay negative cheesecoins"), 0
+	}
+
+	// Check for paying too much
+	if payer_account.Balance < amount {
+		return false, fmt.Sprint("**ERROR:** ", payer_name, " has only ", format_cheesecoins(payer_account.Balance)), 0
+	}
+
+	// Calculate tax
+	tax := int(float64(amount) * data.TaxRate / 100)
+
+	payer_account.Balance -= amount
+	recipiant_account.Balance += amount - tax
+	treasury.Balance += tax
+
+	return true, "", tax
+}
+
 // Utility function to carry out a transaction and return the result as a string
 func pay_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
 	user := interaction.User
@@ -406,22 +472,11 @@ func pay_result(session *discordgo.Session, channel *discordgo.Channel, interact
 		}
 	}
 
-	// Check for negatives
-	if amount < 0 {
-		return fmt.Sprint("**ERROR:** Cannot pay negative cheesecoins")
+	sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name)
+	if !sucsess {
+		return err
 	}
 
-	// Check for paying too much
-	if payer_account.Balance < amount {
-		return fmt.Sprint("**ERROR:** ", payer_name, " has only ", format_cheesecoins(payer_account.Balance))
-	}
-
-	// Calculate tax
-	tax := int(float64(amount) * data.TaxRate / 100)
-
-	payer_account.Balance -= amount
-	recipiant_account.Balance += amount - tax
-	treasury.Balance += tax
 	return fmt.Sprint("Sucsessfully transfered ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_name,
 		".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```")
 }
@@ -457,6 +512,89 @@ func transfer_organisation_result(session *discordgo.Session, channel *discordgo
 // Tries to transfer an organisation and displays the transfer organisation embed as a response to the provided interaction
 func transfer_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
 	create_embed("Transfer organisation", session, interaction, transfer_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
+}
+
+// Tries to delete an organisation and returns the string result
+func delete_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
+	user := interaction.User
+	check_new_user(user)
+
+	user_account := data.PersonalAccounts[data.Users[user.ID].PersonalAccount]
+
+	// Get the organisation
+	organsiation := interaction_data.Options[0].StringValue()
+	organisation_name := data.OrganisationAccounts[organsiation].Name
+
+	if !user_has_org(user, organsiation, true) {
+		return fmt.Sprint("**ERROR:** You do not own ", organisation_name)
+	}
+
+	org_account := data.OrganisationAccounts[organsiation]
+	sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation")
+	if !sucsess {
+		return err
+	}
+
+	delete(data.OrganisationAccounts, organsiation)
+
+	return fmt.Sprint(
+		"Sucessfully deleted ", organisation_name, " all funds have been transfered to your personal account (with ", tax, " in tax)")
+}
+
+// Tries to transfer an organisation and displays the transfer organisation embed as a response to the provided interaction
+func delete_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
+	create_embed("Delete organisation", session, interaction, delete_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
+}
+
+// Tries to create an organisation and returns the string result
+func create_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
+	user := interaction.User
+	check_new_user(user)
+
+	name := interaction_data.Options[0].StringValue()
+
+	data.Users[user.ID].Organisations = append(data.Users[user.ID].Organisations, fmt.Sprint(data.NextOrg))
+	data.OrganisationAccounts[fmt.Sprint(data.NextOrg)] = &Account{Name: name, Balance: 0}
+	data.NextOrg += 1
+
+	return fmt.Sprint(
+		"Sucessfully created ", name, " which is owned by ", data.PersonalAccounts[data.Users[user.ID].PersonalAccount].Name)
+}
+
+// Tries to create an organisation and displays the rename organisation embed as a response to the provided interaction
+func create_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
+	create_embed("Create organisation", session, interaction, create_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
+}
+
+// Handles mp rolecall
+func rollcall_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
+	user := interaction.User
+	check_new_user(user)
+
+	cheese_user := data.Users[user.ID]
+
+	if !cheese_user.Mp {
+		return "You are not an MP. Only MPs can claim this benefit."
+	}
+	duration := time.Now().Sub(cheese_user.LastPay)
+	if duration.Hours() < 18 {
+		return fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago")
+	}
+
+	cheese_user.LastPay = time.Now()
+
+	sucsess, err, tax := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury")
+	if !sucsess {
+		return err
+	}
+
+	return fmt.Sprint(
+		"You have been payed ", format_cheesecoins(data.MpPay), " before tax and ", format_cheesecoins(data.MpPay-tax), " after tax.")
+}
+
+// Tries to create an organisation and displays the rename organisation embed as a response to the provided interaction
+func rollcall(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
+	create_embed("Rolecall", session, interaction, rollcall_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
 }
 
 // Tries to rename an organisation and returns the string result
@@ -540,8 +678,14 @@ func messageCreate(session *discordgo.Session, interaction *discordgo.Interactio
 		pay(session, channel, interaction, interaction_data)
 	} else if interaction_data.Name == "transfer_org" {
 		transfer_organisation(session, channel, interaction, interaction_data)
+	} else if interaction_data.Name == "create_org" {
+		create_organisation(session, channel, interaction, interaction_data)
+	} else if interaction_data.Name == "answer_mp_rolecall" {
+		rollcall(session, channel, interaction, interaction_data)
 	} else if interaction_data.Name == "rename_org" {
 		rename_organisation(session, channel, interaction, interaction_data)
+	} else if interaction_data.Name == "delete_org" {
+		delete_organisation(session, channel, interaction, interaction_data)
 	} else if interaction_data.Name == "sudo_set_tax" {
 		set_tax(session, channel, interaction, interaction_data)
 	}
