@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"time"
@@ -34,7 +35,15 @@ type Data struct {
 	NextOrg              int
 	TaxRate              float64
 	MpPay                int
+	ApplicationCommands  map[string]string
 }
+
+const (
+	AutoCompleteNonSelfUsers int8 = iota
+	AutoCompleteAllAccounts
+	AutoCompleteOwnedOrgs
+	AutoCompleteNone
+)
 
 // Variables used for command line parameters
 var (
@@ -44,7 +53,218 @@ var (
 var (
 	data     Data
 	treasury *Account
-	err      error
+
+	commandHandlers = map[string]func(data_handler HandlerData){
+		"help": func(data_handler HandlerData) {
+			create_embed("Help", data_handler.session, data_handler.interaction, "**List of cheese bot commands**", []*discordgo.MessageEmbedField{
+				{
+					Name:   "/help",
+					Value:  "Displays help about all commands (this message)",
+					Inline: false,
+				},
+				{
+					Name:   "/balances",
+					Value:  "View your personal balance and the balance of your organization(s)",
+					Inline: false,
+				},
+				{
+					Name:   "/pay",
+					Value:  "Pays [recipiant] [cheesecoins] from an account (default is personal account)",
+					Inline: false,
+				},
+				{
+					Name:   "/transfer_org",
+					Value:  "Transfers [organisation] to [new_owner].",
+					Inline: false,
+				},
+				{
+					Name:   "/rename_org",
+					Value:  "Renames [organisation] to [new_name].",
+					Inline: false,
+				},
+				{
+					Name:   "/delete_org",
+					Value:  "Deletes [organisation] and transfers the remaining funds to your personal account.",
+					Inline: false,
+				},
+				{
+					Name:   "/create_org",
+					Value:  "Creates a new organisation with [name] and gives you ownership.",
+					Inline: false,
+				},
+				{
+					Name:   "/mp_daily_rollcall",
+					Value:  "Claim your daily 2cc if you are an MP.",
+					Inline: false,
+				},
+				{
+					Name:   "/sudo_set_tax",
+					Value:  "Sets the tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
+					Inline: false,
+				},
+			})
+		},
+		"balances": func(data_handler HandlerData) {
+			// Get the user data from their discord id
+			user_data := data.Users[data_handler.user.ID]
+
+			description := fmt.Sprintf("**Currency information**\n```\n%-20s %.2f%%\n%-20s %s\n```\n**Your accounts**\n```", "Tax Rate:", data.TaxRate, "Total Currency:", format_cheesecoins(total_currency()))
+
+			// Add their personal account to the resulting string
+			description += format_account(data.PersonalAccounts[user_data.PersonalAccount])
+
+			// Add their organisations to the resulting string
+			for _, account_name := range user_data.Organisations {
+				description += format_account(data.OrganisationAccounts[account_name])
+			}
+
+			description += "```"
+
+			create_embed("Balances", data_handler.session, data_handler.interaction, description, []*discordgo.MessageEmbedField{})
+		},
+		"pay": func(data_handler HandlerData) {
+			// Get the recipiant
+			recipiant_account, _ := get_account(data_handler.interaction_data.Options[0].StringValue())
+			recipiant_name := recipiant_account.Name
+
+			// Get the transaction amount
+			float_amount, _ := data_handler.interaction_data.Options[1].Value.(float64)
+			amount := int(math.Ceil(float_amount * 100))
+
+			// Get the payer - the default being the current user's personal account
+			payer := data.Users[data_handler.user.ID].PersonalAccount
+			payer_account, _ := get_account(payer)
+			payer_name := payer_account.Name + " (Personal)"
+			if len(data_handler.interaction_data.Options) > 2 {
+				payer = data_handler.interaction_data.Options[2].StringValue()
+				payer_account, _ = get_account(payer)
+				payer_name = payer_account.Name
+				if !user_has_org(data_handler.user, payer, false) {
+					create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own the ", payer_name, " organsiation"), []*discordgo.MessageEmbedField{})
+				}
+			}
+
+			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name)
+			if !sucsess {
+				create_embed("Payment", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
+			}
+
+			create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("Sucsessfully transfered ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_name,
+				".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```"),
+				[]*discordgo.MessageEmbedField{})
+		},
+		"transfer_org": func(data_handler HandlerData) {
+			// Get the organisation
+			organsiation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_name := data.OrganisationAccounts[organsiation].Name
+
+			if !user_has_org(data_handler.user, organsiation, true) {
+				create_embed("Transfer organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+			}
+
+			// Get the recipiant
+			recipiant := data.Users[data_handler.interaction_data.Options[1].StringValue()]
+			recipiant_name := data.PersonalAccounts[recipiant.PersonalAccount].Name
+
+			recipiant.Organisations = append(recipiant.Organisations, organsiation)
+
+			create_embed("Transfer organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
+				"Sucessfully transfered ", organisation_name, " to ", recipiant_name), []*discordgo.MessageEmbedField{})
+		},
+		"create_org": func(data_handler HandlerData) {
+			name := data_handler.interaction_data.Options[0].StringValue()
+
+			data.Users[data_handler.user.ID].Organisations = append(data.Users[data_handler.user.ID].Organisations, fmt.Sprint(data.NextOrg))
+			data.OrganisationAccounts[fmt.Sprint(data.NextOrg)] = &Account{Name: name, Balance: 0}
+			data.NextOrg += 1
+
+			create_embed("Create organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
+				"Sucessfully created ", name, " which is owned by ", data.PersonalAccounts[data.Users[data_handler.user.ID].PersonalAccount].Name), []*discordgo.MessageEmbedField{})
+		},
+		"answer_mp_rollcall": func(data_handler HandlerData) {
+			cheese_user := data.Users[data_handler.user.ID]
+
+			if !cheese_user.Mp {
+				create_embed("Rollcall",
+					data_handler.session, data_handler.interaction, "You are not an MP. Only MPs can claim this benefit.", []*discordgo.MessageEmbedField{})
+			}
+			duration := time.Since(cheese_user.LastPay)
+			if duration.Hours() < 18 {
+				create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago"),
+					[]*discordgo.MessageEmbedField{})
+			}
+
+			cheese_user.LastPay = time.Now()
+
+			sucsess, err, tax := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury")
+			if !sucsess {
+				create_embed("Rollcall", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
+			}
+
+			create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint(
+				"You have been payed ", format_cheesecoins(data.MpPay), " before tax and ", format_cheesecoins(data.MpPay-tax), " after tax."),
+				[]*discordgo.MessageEmbedField{})
+		},
+		"rename_org": func(data_handler HandlerData) {
+			// Get the organisation
+			organsiation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_account := data.OrganisationAccounts[organsiation]
+			organisation_name := organisation_account.Name
+
+			if !user_has_org(data_handler.user, organsiation, false) {
+				create_embed("Rename organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+			}
+
+			new_name := data_handler.interaction_data.Options[1].StringValue()
+
+			organisation_account.Name = new_name
+
+			create_embed("Rename organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
+				"Sucessfully renamed ", organisation_name, " to ", new_name), []*discordgo.MessageEmbedField{})
+		},
+		"delete_org": func(data_handler HandlerData) {
+			user_account := data.PersonalAccounts[data.Users[data_handler.user.ID].PersonalAccount]
+
+			// Get the organisation
+			organsiation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_name := data.OrganisationAccounts[organsiation].Name
+
+			if !user_has_org(data_handler.user, organsiation, true) {
+				create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+			}
+
+			org_account := data.OrganisationAccounts[organsiation]
+			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation")
+			if !sucsess {
+				create_embed("Delete organisation", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
+			}
+
+			delete(data.OrganisationAccounts, organsiation)
+
+			create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
+				"Sucessfully deleted ", organisation_name, " all funds have been transfered to your personal account (with ", tax, " in tax)"), []*discordgo.MessageEmbedField{})
+		},
+		"sudo_set_tax": func(data_handler HandlerData) {
+			if !data.Users[data_handler.user.ID].SuperUser {
+				create_embed("Set Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+			}
+
+			data.TaxRate = data_handler.interaction_data.Options[0].Value.(float64)
+
+			create_embed("Set Tax", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set tax to ", data.TaxRate, "%."), []*discordgo.MessageEmbedField{})
+		},
+	}
+	commandAutocomplete = map[string][]int8{
+		"help":               {},
+		"balances":           {},
+		"pay":                {AutoCompleteAllAccounts, AutoCompleteNone, AutoCompleteOwnedOrgs},
+		"transfer_org":       {AutoCompleteOwnedOrgs, AutoCompleteNonSelfUsers},
+		"create_org":         {AutoCompleteNone},
+		"rename_org":         {AutoCompleteOwnedOrgs, AutoCompleteNone},
+		"answer_mp_rollcall": {},
+		"delete_org":         {AutoCompleteOwnedOrgs},
+		"sudo_set_tax":       {AutoCompleteNone},
+	}
 )
 
 // Read the json file - called on init
@@ -125,29 +345,6 @@ func check_new_user(user *discordgo.User) {
 
 // Bulk overrides the bot's slash commands and adds new ones.
 func add_commands(session *discordgo.Session) {
-	user_account_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts))
-	index := 0
-	for id, account := range data.PersonalAccounts {
-		user_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Personal)", Value: id}
-		index++
-	}
-
-	user_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts))
-	index = 0
-	for id, user := range data.Users {
-		user_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.PersonalAccounts[user.PersonalAccount].Name + " (Person)", Value: id}
-		index++
-	}
-
-	org_account_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.OrganisationAccounts))
-	index = 0
-	for id, account := range data.OrganisationAccounts {
-		org_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Organisation)", Value: id}
-		index++
-	}
-
-	all_account_choices := append(user_account_choices[:], org_account_choices[:]...)
-
 	command := []*discordgo.ApplicationCommand{
 		{
 			Name:        "help",
@@ -163,11 +360,11 @@ func add_commands(session *discordgo.Session) {
 			Description: "Give someone cheesecoins.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "recipiant",
-					Description: "Recipiant of the payment",
-					Required:    true,
-					Choices:     all_account_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "recipiant",
+					Description:  "Recipiant of the payment",
+					Required:     true,
+					Autocomplete: true,
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionType(10), // Float
@@ -176,11 +373,11 @@ func add_commands(session *discordgo.Session) {
 					Required:    true,
 				},
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "from_org",
-					Description: "The account organisation the cheesecoins from (must be owned by you). Default is personal",
-					Required:    false,
-					Choices:     org_account_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "from_org",
+					Description:  "The account organisation the cheesecoins from (must be owned by you). Default is personal",
+					Required:     false,
+					Autocomplete: true,
 				},
 			},
 		}, {
@@ -189,18 +386,18 @@ func add_commands(session *discordgo.Session) {
 			Description: "Transfer an organisation you own to another user.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "organisation",
-					Description: "The organisation you wish to transfer (must be owned by you).",
-					Required:    true,
-					Choices:     org_account_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "organisation",
+					Description:  "The organisation you wish to transfer (must be owned by you).",
+					Required:     true,
+					Autocomplete: true,
 				},
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "new_owner",
-					Description: "The new owner of the organisation",
-					Required:    true,
-					Choices:     user_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "new_owner",
+					Description:  "The new owner of the organisation",
+					Required:     true,
+					Autocomplete: true,
 				},
 			},
 		}, {
@@ -209,11 +406,11 @@ func add_commands(session *discordgo.Session) {
 			Description: "Rename an organisation you own.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "organisation",
-					Description: "The organisation you wish to rename (must be owned by you).",
-					Required:    true,
-					Choices:     org_account_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "organisation",
+					Description:  "The organisation you wish to rename (must be owned by you).",
+					Required:     true,
+					Autocomplete: true,
 				},
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
@@ -241,15 +438,15 @@ func add_commands(session *discordgo.Session) {
 			Description: "Delete an organisation.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "organisation",
-					Description: "The organisation you wish to delete (must be owned by you).",
-					Required:    true,
-					Choices:     org_account_choices,
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "organisation",
+					Description:  "The organisation you wish to delete (must be owned by you).",
+					Required:     true,
+					Autocomplete: true,
 				},
 			},
 		}, {
-			Name:        "answer_mp_rolecall",
+			Name:        "answer_mp_rollcall",
 			Type:        discordgo.ChatApplicationCommand,
 			Description: "Show you are active and get payed for the day if you are an MP.",
 		}, {
@@ -333,42 +530,6 @@ func main() {
 
 }
 
-// Displays the help embed as a response to the provided interaction
-func help(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate) {
-	create_embed("Help", session, interaction, "**List of cheese bot commands**", []*discordgo.MessageEmbedField{
-		{
-			Name:   "/help",
-			Value:  "Displays help about all commands (this message)",
-			Inline: false,
-		},
-		{
-			Name:   "/balances",
-			Value:  "View your personal balance and the balance of your organization(s)",
-			Inline: false,
-		},
-		{
-			Name:   "/pay",
-			Value:  "Pays [recipiant] [cheesecoins] from an account (default is personal account)",
-			Inline: false,
-		},
-		{
-			Name:   "/transfer_org",
-			Value:  "Transfers [organisation] to [new_owner].",
-			Inline: false,
-		},
-		{
-			Name:   "/rename_org",
-			Value:  "Renames [organisation] to [new_name].",
-			Inline: false,
-		},
-		{
-			Name:   "/sudo_set_tax",
-			Value:  "Sets the tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
-			Inline: false,
-		},
-	})
-}
-
 // Utility function for providing a string of an account
 func format_account(account *Account) string {
 	return fmt.Sprintf("%-20s %s\n", account.Name+":", format_cheesecoins(account.Balance))
@@ -384,29 +545,6 @@ func total_currency() int {
 		total += a.Balance
 	}
 	return total
-}
-
-// Displays the balance embed as a response to the provided interaction
-func balances(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate) {
-	user := interaction.User
-	check_new_user(user)
-
-	// Get the user data from their discord id
-	user_data := data.Users[user.ID]
-
-	description := fmt.Sprintf("**Currency information**\n```\n%-20s %.2f%%\n%-20s %s\n```\n**Your accounts**\n```", "Tax Rate:", data.TaxRate, "Total Currency:", format_cheesecoins(total_currency()))
-
-	// Add their personal account to the resulting string
-	description += format_account(data.PersonalAccounts[user_data.PersonalAccount])
-
-	// Add their organisations to the resulting string
-	for _, account_name := range user_data.Organisations {
-		description += format_account(data.OrganisationAccounts[account_name])
-	}
-
-	description += "```"
-
-	create_embed("Balances", session, interaction, description, []*discordgo.MessageEmbedField{})
 }
 
 // Untility function to check if the user has control of the organisation specified.
@@ -428,7 +566,7 @@ func user_has_org(user *discordgo.User, org string, delete_if_found bool) bool {
 func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string) (bool, string, int) {
 	// Check for negatives
 	if amount < 0 {
-		return false, fmt.Sprint("**ERROR:** Cannot pay negative cheesecoins"), 0
+		return false, "**ERROR:** Cannot pay negative cheesecoins", 0
 	}
 
 	// Check for paying too much
@@ -446,201 +584,12 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 	return true, "", tax
 }
 
-// Utility function to carry out a transaction and return the result as a string
-func pay_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	// Get the recipiant
-	recipiant_account, _ := get_account(interaction_data.Options[0].StringValue())
-	recipiant_name := recipiant_account.Name
-
-	// Get the transaction amount
-	float_amount, _ := interaction_data.Options[1].Value.(float64)
-	amount := int(float_amount * 100)
-
-	// Get the payer - the default being the current user's personal account
-	payer := data.Users[user.ID].PersonalAccount
-	payer_account, _ := get_account(payer)
-	payer_name := payer_account.Name + " (Personal)"
-	if len(interaction_data.Options) > 2 {
-		payer = interaction_data.Options[2].StringValue()
-		payer_account, _ = get_account(payer)
-		payer_name = payer_account.Name
-		if !user_has_org(user, payer, false) {
-			return fmt.Sprint("**ERROR:** You do not own the ", payer_name, " organsiation")
-		}
-	}
-
-	sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name)
-	if !sucsess {
-		return err
-	}
-
-	return fmt.Sprint("Sucsessfully transfered ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_name,
-		".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```")
-}
-
-// Carries out a payment and displays the pay embed as a response to the provided interaction
-func pay(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Payment", session, interaction, pay_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Tries to transfer an organisation and returns the string result
-func transfer_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	// Get the organisation
-	organsiation := interaction_data.Options[0].StringValue()
-	organisation_name := data.OrganisationAccounts[organsiation].Name
-
-	if !user_has_org(user, organsiation, true) {
-		return fmt.Sprint("**ERROR:** You do not own ", organisation_name)
-	}
-
-	// Get the recipiant
-	recipiant := data.Users[interaction_data.Options[1].StringValue()]
-	recipiant_name := data.PersonalAccounts[recipiant.PersonalAccount].Name
-
-	recipiant.Organisations = append(recipiant.Organisations, organsiation)
-
-	return fmt.Sprint(
-		"Sucessfully transfered ", organisation_name, " to ", recipiant_name)
-}
-
-// Tries to transfer an organisation and displays the transfer organisation embed as a response to the provided interaction
-func transfer_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Transfer organisation", session, interaction, transfer_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Tries to delete an organisation and returns the string result
-func delete_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	user_account := data.PersonalAccounts[data.Users[user.ID].PersonalAccount]
-
-	// Get the organisation
-	organsiation := interaction_data.Options[0].StringValue()
-	organisation_name := data.OrganisationAccounts[organsiation].Name
-
-	if !user_has_org(user, organsiation, true) {
-		return fmt.Sprint("**ERROR:** You do not own ", organisation_name)
-	}
-
-	org_account := data.OrganisationAccounts[organsiation]
-	sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation")
-	if !sucsess {
-		return err
-	}
-
-	delete(data.OrganisationAccounts, organsiation)
-
-	return fmt.Sprint(
-		"Sucessfully deleted ", organisation_name, " all funds have been transfered to your personal account (with ", tax, " in tax)")
-}
-
-// Tries to transfer an organisation and displays the transfer organisation embed as a response to the provided interaction
-func delete_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Delete organisation", session, interaction, delete_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Tries to create an organisation and returns the string result
-func create_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	name := interaction_data.Options[0].StringValue()
-
-	data.Users[user.ID].Organisations = append(data.Users[user.ID].Organisations, fmt.Sprint(data.NextOrg))
-	data.OrganisationAccounts[fmt.Sprint(data.NextOrg)] = &Account{Name: name, Balance: 0}
-	data.NextOrg += 1
-
-	return fmt.Sprint(
-		"Sucessfully created ", name, " which is owned by ", data.PersonalAccounts[data.Users[user.ID].PersonalAccount].Name)
-}
-
-// Tries to create an organisation and displays the rename organisation embed as a response to the provided interaction
-func create_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Create organisation", session, interaction, create_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Handles mp rolecall
-func rollcall_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	cheese_user := data.Users[user.ID]
-
-	if !cheese_user.Mp {
-		return "You are not an MP. Only MPs can claim this benefit."
-	}
-	duration := time.Now().Sub(cheese_user.LastPay)
-	if duration.Hours() < 18 {
-		return fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago")
-	}
-
-	cheese_user.LastPay = time.Now()
-
-	sucsess, err, tax := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury")
-	if !sucsess {
-		return err
-	}
-
-	return fmt.Sprint(
-		"You have been payed ", format_cheesecoins(data.MpPay), " before tax and ", format_cheesecoins(data.MpPay-tax), " after tax.")
-}
-
-// Tries to create an organisation and displays the rename organisation embed as a response to the provided interaction
-func rollcall(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Rolecall", session, interaction, rollcall_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Tries to rename an organisation and returns the string result
-func rename_organisation_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	// Get the organisation
-	organsiation := interaction_data.Options[0].StringValue()
-	organisation_account := data.OrganisationAccounts[organsiation]
-	organisation_name := organisation_account.Name
-
-	if !user_has_org(user, organsiation, false) {
-		return fmt.Sprint("**ERROR:** You do not own ", organisation_name)
-	}
-
-	new_name := interaction_data.Options[1].StringValue()
-
-	organisation_account.Name = new_name
-
-	return fmt.Sprint(
-		"Sucessfully renamed ", organisation_name, " to ", new_name)
-}
-
-// Tries to rename an organisation and displays the rename organisation embed as a response to the provided interaction
-func rename_organisation(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Rename organisation", session, interaction, rename_organisation_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
-}
-
-// Tries to rename an organisation and returns the string result
-func set_tax_result(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) string {
-	user := interaction.User
-	check_new_user(user)
-
-	if !data.Users[user.ID].SuperUser {
-		return fmt.Sprint("**ERROR:** You are not a super user")
-	}
-
-	data.TaxRate = interaction_data.Options[0].Value.(float64)
-
-	return fmt.Sprint("Sucessfully set tax to ", data.TaxRate, "%.")
-}
-
-// Tries to set tax and displays the set tax embed as a response to the provided interaction
-func set_tax(session *discordgo.Session, channel *discordgo.Channel, interaction *discordgo.InteractionCreate, interaction_data discordgo.ApplicationCommandInteractionData) {
-	create_embed("Set Tax", session, interaction, set_tax_result(session, channel, interaction, interaction_data), []*discordgo.MessageEmbedField{})
+type HandlerData struct {
+	session          *discordgo.Session
+	channel          *discordgo.Channel
+	interaction      *discordgo.InteractionCreate
+	interaction_data discordgo.ApplicationCommandInteractionData
+	user             *discordgo.User
 }
 
 // This function will be called (due to AddHandler above) every time a new
@@ -649,6 +598,7 @@ func messageCreate(session *discordgo.Session, interaction *discordgo.Interactio
 	interaction_data := interaction.ApplicationCommandData()
 
 	user := interaction.User
+	check_new_user(user)
 
 	// Ignore all messages created by the bot itself
 	// This isn't required in this specific example but it's a good practice.
@@ -666,27 +616,73 @@ func messageCreate(session *discordgo.Session, interaction *discordgo.Interactio
 	if channel.Type != discordgo.ChannelTypeDM {
 		return
 	}
-
 	fmt.Println("interaction", interaction_data.Name, "interaction", interaction, "From ", user.Username)
 
-	// Handle interactions
-	if interaction_data.Name == "help" {
-		help(session, channel, interaction)
-	} else if interaction_data.Name == "balances" {
-		balances(session, channel, interaction)
-	} else if interaction_data.Name == "pay" {
-		pay(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "transfer_org" {
-		transfer_organisation(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "create_org" {
-		create_organisation(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "answer_mp_rolecall" {
-		rollcall(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "rename_org" {
-		rename_organisation(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "delete_org" {
-		delete_organisation(session, channel, interaction, interaction_data)
-	} else if interaction_data.Name == "sudo_set_tax" {
-		set_tax(session, channel, interaction, interaction_data)
+	handler_data := HandlerData{session: session, channel: channel, interaction: interaction, interaction_data: interaction_data, user: user}
+
+	switch interaction.Type {
+	case discordgo.InteractionApplicationCommand:
+		commandHandlers[interaction_data.Name](handler_data)
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		focused := 0
+		for {
+			if interaction_data.Options[focused].Focused {
+				break
+			}
+			focused += 1
+		}
+
+		switch commandAutocomplete[interaction_data.Name][focused] {
+		case AutoCompleteNone:
+			return
+		case AutoCompleteAllAccounts:
+			all_account_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts)+len(data.OrganisationAccounts))
+			index := 0
+			for id, account := range data.PersonalAccounts {
+				all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Personal)", Value: id}
+				index++
+			}
+			for id, account := range data.OrganisationAccounts {
+				all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Organisation)", Value: id}
+				index++
+			}
+			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+				Data: &discordgo.InteractionResponseData{
+					Choices: all_account_choices,
+				},
+			})
+		case AutoCompleteOwnedOrgs:
+			owned_org_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.Users[user.ID].Organisations))
+			index := 0
+			for _, org := range data.Users[user.ID].Organisations {
+				owned_org_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.OrganisationAccounts[org].Name + " (Organisation)", Value: org}
+				index++
+			}
+			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+				Data: &discordgo.InteractionResponseData{
+					Choices: owned_org_choices,
+				},
+			})
+		case AutoCompleteNonSelfUsers:
+			index := 0
+			user_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts)-1)
+			for id, other_user := range data.Users {
+				if id != user.ID {
+					user_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.PersonalAccounts[other_user.PersonalAccount].Name + " (Person)", Value: id}
+					index++
+				}
+			}
+			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+				Data: &discordgo.InteractionResponseData{
+					Choices: user_choices,
+				},
+			})
+		}
+		if err != nil {
+			panic(err)
+		}
 	}
 }

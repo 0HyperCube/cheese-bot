@@ -12,4 +12,4 @@
 *.out
 
 # Contains the token
-run.txt
+run.sh
