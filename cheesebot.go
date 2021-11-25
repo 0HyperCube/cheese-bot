@@ -149,12 +149,14 @@ var (
 				payer_name = payer_account.Name
 				if !user_has_org(data_handler.user, payer, false) {
 					create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own the ", payer_name, " organsiation"), []*discordgo.MessageEmbedField{})
+					return
 				}
 			}
 
 			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name, data_handler.session)
 			if !sucsess {
 				create_embed("Payment", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("Sucsessfully transfered ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_name,
@@ -168,6 +170,7 @@ var (
 
 			if !user_has_org(data_handler.user, organsiation, true) {
 				create_embed("Transfer organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			// Get the recipiant
@@ -195,11 +198,13 @@ var (
 			if !cheese_user.Mp {
 				create_embed("Rollcall",
 					data_handler.session, data_handler.interaction, "You are not an MP. Only MPs can claim this benefit.", []*discordgo.MessageEmbedField{})
+				return
 			}
 			duration := time.Since(cheese_user.LastPay)
 			if duration.Hours() < 18 {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago"),
 					[]*discordgo.MessageEmbedField{})
+				return
 			}
 
 			cheese_user.LastPay = time.Now()
@@ -217,6 +222,7 @@ var (
 
 			if !user_has_org(data_handler.user, organsiation, false) {
 				create_embed("Rename organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			new_name := data_handler.interaction_data.Options[1].StringValue()
@@ -235,12 +241,14 @@ var (
 
 			if !user_has_org(data_handler.user, organsiation, true) {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			org_account := data.OrganisationAccounts[organsiation]
 			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session)
 			if !sucsess {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			delete(data.OrganisationAccounts, organsiation)
@@ -251,6 +259,7 @@ var (
 		"sudo_set_wealth_tax": func(data_handler HandlerData) {
 			if !data.Users[data_handler.user.ID].SuperUser {
 				create_embed("Set Wealth Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			data.WealthTax = data_handler.interaction_data.Options[0].Value.(float64)
@@ -260,6 +269,7 @@ var (
 		"sudo_set_transaction_tax": func(data_handler HandlerData) {
 			if !data.Users[data_handler.user.ID].SuperUser {
 				create_embed("Set Transaction Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+				return
 			}
 
 			data.TransactionTax = data_handler.interaction_data.Options[0].Value.(float64)
