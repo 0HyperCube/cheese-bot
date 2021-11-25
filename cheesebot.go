@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/sahilm/fuzzy"
 )
 
 type User struct {
@@ -33,9 +34,10 @@ type Data struct {
 	OrganisationAccounts map[string]*Account
 	NextPersonal         int
 	NextOrg              int
-	TaxRate              float64
+	TransactionTax       float64
+	WealthTax            float64
 	MpPay                int
-	ApplicationCommands  map[string]string
+	LastWealthTax        time.Time
 }
 
 const (
@@ -98,8 +100,13 @@ var (
 					Inline: false,
 				},
 				{
-					Name:   "/sudo_set_tax",
-					Value:  "Sets the tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
+					Name:   "/sudo_set_wealth_tax",
+					Value:  "Sets the wealth tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
+					Inline: false,
+				},
+				{
+					Name:   "/sudo_set_transaction_tax",
+					Value:  "Sets the transaction tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
 					Inline: false,
 				},
 			})
@@ -108,7 +115,8 @@ var (
 			// Get the user data from their discord id
 			user_data := data.Users[data_handler.user.ID]
 
-			description := fmt.Sprintf("**Currency information**\n```\n%-20s %.2f%%\n%-20s %s\n```\n**Your accounts**\n```", "Tax Rate:", data.TaxRate, "Total Currency:", format_cheesecoins(total_currency()))
+			description := fmt.Sprintf("**Currency information**\n```\n%-20s %.2f%%\n%-20s %.2f%%\n%-20s %s\n```\n**Your accounts**\n```",
+				"Wealth Tax:", data.WealthTax, "Transaction Tax:", data.TransactionTax, "Total Currency:", format_cheesecoins(total_currency()))
 
 			// Add their personal account to the resulting string
 			description += format_account(data.PersonalAccounts[user_data.PersonalAccount])
@@ -129,7 +137,7 @@ var (
 
 			// Get the transaction amount
 			float_amount, _ := data_handler.interaction_data.Options[1].Value.(float64)
-			amount := int(math.Ceil(float_amount * 100))
+			amount := int(float_amount * 100)
 
 			// Get the payer - the default being the current user's personal account
 			payer := data.Users[data_handler.user.ID].PersonalAccount
@@ -144,7 +152,7 @@ var (
 				}
 			}
 
-			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name)
+			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name, data_handler.session)
 			if !sucsess {
 				create_embed("Payment", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
@@ -196,14 +204,10 @@ var (
 
 			cheese_user.LastPay = time.Now()
 
-			sucsess, err, tax := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury")
+			sucsess, err, _ := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session)
 			if !sucsess {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
-
-			create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint(
-				"You have been payed ", format_cheesecoins(data.MpPay), " before tax and ", format_cheesecoins(data.MpPay-tax), " after tax."),
-				[]*discordgo.MessageEmbedField{})
 		},
 		"rename_org": func(data_handler HandlerData) {
 			// Get the organisation
@@ -234,7 +238,7 @@ var (
 			}
 
 			org_account := data.OrganisationAccounts[organsiation]
-			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation")
+			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session)
 			if !sucsess {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
@@ -244,26 +248,36 @@ var (
 			create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
 				"Sucessfully deleted ", organisation_name, " all funds have been transfered to your personal account (with ", tax, " in tax)"), []*discordgo.MessageEmbedField{})
 		},
-		"sudo_set_tax": func(data_handler HandlerData) {
+		"sudo_set_wealth_tax": func(data_handler HandlerData) {
 			if !data.Users[data_handler.user.ID].SuperUser {
-				create_embed("Set Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+				create_embed("Set Wealth Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
 			}
 
-			data.TaxRate = data_handler.interaction_data.Options[0].Value.(float64)
+			data.WealthTax = data_handler.interaction_data.Options[0].Value.(float64)
 
-			create_embed("Set Tax", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set tax to ", data.TaxRate, "%."), []*discordgo.MessageEmbedField{})
+			create_embed("Set Wealth Tax", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set wealth tax to ", data.WealthTax, "%."), []*discordgo.MessageEmbedField{})
+		},
+		"sudo_set_transaction_tax": func(data_handler HandlerData) {
+			if !data.Users[data_handler.user.ID].SuperUser {
+				create_embed("Set Transaction Tax", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+			}
+
+			data.TransactionTax = data_handler.interaction_data.Options[0].Value.(float64)
+
+			create_embed("Set Transaction Tax", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set transaction tax to ", data.TransactionTax, "%."), []*discordgo.MessageEmbedField{})
 		},
 	}
 	commandAutocomplete = map[string][]int8{
-		"help":               {},
-		"balances":           {},
-		"pay":                {AutoCompleteAllAccounts, AutoCompleteNone, AutoCompleteOwnedOrgs},
-		"transfer_org":       {AutoCompleteOwnedOrgs, AutoCompleteNonSelfUsers},
-		"create_org":         {AutoCompleteNone},
-		"rename_org":         {AutoCompleteOwnedOrgs, AutoCompleteNone},
-		"answer_mp_rollcall": {},
-		"delete_org":         {AutoCompleteOwnedOrgs},
-		"sudo_set_tax":       {AutoCompleteNone},
+		"help":                     {},
+		"balances":                 {},
+		"pay":                      {AutoCompleteAllAccounts, AutoCompleteNone, AutoCompleteOwnedOrgs},
+		"transfer_org":             {AutoCompleteOwnedOrgs, AutoCompleteNonSelfUsers},
+		"create_org":               {AutoCompleteNone},
+		"rename_org":               {AutoCompleteOwnedOrgs, AutoCompleteNone},
+		"answer_mp_rollcall":       {},
+		"delete_org":               {AutoCompleteOwnedOrgs},
+		"sudo_set_wealth_tax":      {AutoCompleteNone},
+		"sudo_set_transaction_tax": {AutoCompleteNone},
 	}
 )
 
@@ -306,8 +320,47 @@ func periodic_save() {
 	}
 }
 
+// Applies welth tax to a specific account returning the log information for the user
+func apply_wealth_tax_account(account *Account, name string) string {
+	tax := int(math.Ceil(float64(account.Balance) * data.WealthTax / 100))
+	account.Balance -= tax
+	treasury.Balance += tax
+	return fmt.Sprintf("\n%-20s %s", name+":", format_cheesecoins(tax))
+}
+
+// Applies wealth tax. Called every day
+func apply_wealth_tax(session *discordgo.Session) {
+	fmt.Print("Wealth tax.")
+	for id, usr := range data.Users {
+		result := apply_wealth_tax_account(data.PersonalAccounts[usr.PersonalAccount], "Personal")
+		for _, org := range usr.Organisations {
+			account := data.OrganisationAccounts[org]
+			if account != treasury {
+				result += apply_wealth_tax_account(account, data.OrganisationAccounts[org].Name)
+			}
+		}
+
+		send_embed("Wealth Tax", session, id,
+			fmt.Sprintf("Wealth tax has been applied at `%.2f%%`.\n\n**Payments**\n```%s\n```", data.WealthTax, result),
+			[]*discordgo.MessageEmbedField{})
+
+		fmt.Println(result) // Probably send this to the user to notify them of the tax
+	}
+}
+
+func check_wealth_tax(session *discordgo.Session) {
+	for range time.Tick(time.Minute * 1) {
+		if time.Since(data.LastWealthTax).Hours() > 20 {
+			data.LastWealthTax.Add(time.Hour * 24)
+			apply_wealth_tax(session)
+		}
+	}
+}
+
 // Called as the first function to run from this module
 func init() {
+	r, _ := time.Now().MarshalJSON()
+
 	// Parse the bot token as a command line arg from the format `go run . -t [token]`
 	flag.StringVar(&Token, "t", "", "Bot Token")
 	flag.Parse()
@@ -316,6 +369,8 @@ func init() {
 	read_data()
 
 	go periodic_save()
+
+	fmt.Println(string(r), format_cheesecoins(total_currency()))
 }
 
 // Utility for finding an account that could be a user or an organisation account.
@@ -345,6 +400,16 @@ func check_new_user(user *discordgo.User) {
 
 // Bulk overrides the bot's slash commands and adds new ones.
 func add_commands(session *discordgo.Session) {
+	all_account_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts)+len(data.OrganisationAccounts))
+	index := 0
+	for id, account := range data.PersonalAccounts {
+		all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Personal)", Value: id}
+		index++
+	}
+	for id, account := range data.OrganisationAccounts {
+		all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Organisation)", Value: id}
+		index++
+	}
 	command := []*discordgo.ApplicationCommand{
 		{
 			Name:        "help",
@@ -450,14 +515,26 @@ func add_commands(session *discordgo.Session) {
 			Type:        discordgo.ChatApplicationCommand,
 			Description: "Show you are active and get payed for the day if you are an MP.",
 		}, {
-			Name:        "sudo_set_tax",
+			Name:        "sudo_set_wealth_tax",
 			Type:        discordgo.ChatApplicationCommand,
-			Description: "Set the tax rate.",
+			Description: "Set the wealth tax rate.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionType(10), // Float
 					Name:        "new_tax",
-					Description: "The new tax rate (0% to 100%).",
+					Description: "The new wealth tax rate (0% to 100%).",
+					Required:    true,
+				},
+			},
+		}, {
+			Name:        "sudo_set_transaction_tax",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Set the transaction tax rate.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionType(10), // Float
+					Name:        "new_tax",
+					Description: "The new transaction tax rate (0% to 100%).",
 					Required:    true,
 				},
 			},
@@ -489,8 +566,29 @@ func create_embed(name string, session *discordgo.Session, interaction *discordg
 	}})
 }
 
-func main() {
+// Utility function to create an embed in response to an interaction
+func send_embed(name string, session *discordgo.Session, user string, description string, Fields []*discordgo.MessageEmbedField) {
+	embed := &discordgo.MessageEmbed{
+		Author:      &discordgo.MessageEmbedAuthor{},
+		Color:       0xFFE41E,
+		Description: description,
 
+		Timestamp: time.Now().Format(time.RFC3339), // Discord wants ISO8601; RFC3339 is an extension of ISO8601 and should be completely compatible.
+		Title:     name,
+		Fields:    Fields,
+	}
+
+	// Send the embed as a response to the provided interaction
+	channel, err := session.UserChannelCreate(user)
+
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		session.ChannelMessageSendEmbed(channel.ID, embed)
+	}
+}
+
+func main() {
 	// Create a new Discord session using the provided bot token.
 	session, err := discordgo.New("Bot " + Token)
 	if err != nil {
@@ -498,11 +596,13 @@ func main() {
 		return
 	}
 
-	// Register the messageCreate func as a callback for MessageCreate events.
-	session.AddHandler(messageCreate)
+	// Register the interaction func as a callback for InteractionCreate events.
+	session.AddHandler(interactionCreate)
 
-	// Just like the ping pong example, we only care about receiving message
-	// events in this example.
+	// Start checking if wealth tax should be applied
+	go check_wealth_tax(session)
+
+	// Only dms
 	session.Identify.Intents = discordgo.IntentsDirectMessages
 
 	// Open a websocket connection to Discord and begin listening.
@@ -562,8 +662,22 @@ func user_has_org(user *discordgo.User, org string, delete_if_found bool) bool {
 	return false
 }
 
+func account_owner(account *Account) string {
+	for id, usr := range data.Users {
+		if data.PersonalAccounts[usr.PersonalAccount] == account {
+			return id
+		}
+		for _, org := range usr.Organisations {
+			if data.OrganisationAccounts[org] == account {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 // Conducts a transaction. Returns `Sucsess bool`, `error string` and `tax int`
-func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string) (bool, string, int) {
+func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string, session *discordgo.Session) (bool, string, int) {
 	// Check for negatives
 	if amount < 0 {
 		return false, "**ERROR:** Cannot pay negative cheesecoins", 0
@@ -575,11 +689,20 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 	}
 
 	// Calculate tax
-	tax := int(float64(amount) * data.TaxRate / 100)
+	tax := int(math.Ceil(float64(amount) * data.TransactionTax / 100))
 
 	payer_account.Balance -= amount
 	recipiant_account.Balance += amount - tax
 	treasury.Balance += tax
+
+	if session != nil {
+		recipiant_id := account_owner(recipiant_account)
+
+		send_embed("Payment", session, recipiant_id,
+			fmt.Sprint("You've recieved ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_account.Name,
+				".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```"),
+			[]*discordgo.MessageEmbedField{})
+	}
 
 	return true, "", tax
 }
@@ -591,10 +714,19 @@ type HandlerData struct {
 	interaction_data discordgo.ApplicationCommandInteractionData
 	user             *discordgo.User
 }
+type option_choice []*discordgo.ApplicationCommandOptionChoice
+
+func (x option_choice) String(i int) string {
+	return x[i].Name
+}
+
+func (employ option_choice) Len() int {
+	return len(employ)
+}
 
 // This function will be called (due to AddHandler above) every time a new
-// message is created on any channel that the authenticated bot has access to.
-func messageCreate(session *discordgo.Session, interaction *discordgo.InteractionCreate) {
+// interaction is created.
+func interactionCreate(session *discordgo.Session, interaction *discordgo.InteractionCreate) {
 	interaction_data := interaction.ApplicationCommandData()
 
 	user := interaction.User
@@ -616,12 +748,12 @@ func messageCreate(session *discordgo.Session, interaction *discordgo.Interactio
 	if channel.Type != discordgo.ChannelTypeDM {
 		return
 	}
-	fmt.Println("interaction", interaction_data.Name, "interaction", interaction, "From ", user.Username)
 
 	handler_data := HandlerData{session: session, channel: channel, interaction: interaction, interaction_data: interaction_data, user: user}
 
 	switch interaction.Type {
 	case discordgo.InteractionApplicationCommand:
+		fmt.Println("interaction", interaction_data.Name, "interaction", interaction, "From ", user.Username)
 		commandHandlers[interaction_data.Name](handler_data)
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		focused := 0
@@ -632,57 +764,61 @@ func messageCreate(session *discordgo.Session, interaction *discordgo.Interactio
 			focused += 1
 		}
 
+		values := option_choice{}
+
 		switch commandAutocomplete[interaction_data.Name][focused] {
 		case AutoCompleteNone:
 			return
 		case AutoCompleteAllAccounts:
-			all_account_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts)+len(data.OrganisationAccounts))
+			values = make(option_choice, len(data.PersonalAccounts)+len(data.OrganisationAccounts))
 			index := 0
 			for id, account := range data.PersonalAccounts {
-				all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Personal)", Value: id}
+				values[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Personal)", Value: id}
 				index++
 			}
 			for id, account := range data.OrganisationAccounts {
-				all_account_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Organisation)", Value: id}
+				values[index] = &discordgo.ApplicationCommandOptionChoice{Name: account.Name + " (Organisation)", Value: id}
 				index++
 			}
-			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-				Data: &discordgo.InteractionResponseData{
-					Choices: all_account_choices,
-				},
-			})
+
 		case AutoCompleteOwnedOrgs:
-			owned_org_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.Users[user.ID].Organisations))
+			values = make(option_choice, len(data.Users[user.ID].Organisations))
 			index := 0
 			for _, org := range data.Users[user.ID].Organisations {
-				owned_org_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.OrganisationAccounts[org].Name + " (Organisation)", Value: org}
+				values[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.OrganisationAccounts[org].Name + " (Organisation)", Value: org}
 				index++
 			}
-			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
-				Data: &discordgo.InteractionResponseData{
-					Choices: owned_org_choices,
-				},
-			})
 		case AutoCompleteNonSelfUsers:
 			index := 0
-			user_choices := make([]*discordgo.ApplicationCommandOptionChoice, len(data.PersonalAccounts)-1)
+			values = make(option_choice, len(data.PersonalAccounts)-1)
 			for id, other_user := range data.Users {
 				if id != user.ID {
-					user_choices[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.PersonalAccounts[other_user.PersonalAccount].Name + " (Person)", Value: id}
+					values[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.PersonalAccounts[other_user.PersonalAccount].Name + " (Person)", Value: id}
 					index++
 				}
 			}
+		}
+
+		if len(values) > 0 {
+			matches := fuzzy.FindFrom(interaction_data.Options[focused].Value.(string), values)
+			results := make(option_choice, len(matches))
+			for i, y := range matches {
+				results[i] = values[y.Index]
+			}
+			if len(matches) == 0 {
+				results = values
+			}
+
 			err = session.InteractionRespond(interaction.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionApplicationCommandAutocompleteResult,
 				Data: &discordgo.InteractionResponseData{
-					Choices: user_choices,
+					Choices: results,
 				},
 			})
+			if err != nil {
+				panic(err)
+			}
 		}
-		if err != nil {
-			panic(err)
-		}
+
 	}
 }
