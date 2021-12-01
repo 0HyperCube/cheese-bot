@@ -52,6 +52,14 @@ var (
 	Token string
 )
 
+type HandlerData struct {
+	session          *discordgo.Session
+	channel          *discordgo.Channel
+	interaction      *discordgo.InteractionCreate
+	interaction_data discordgo.ApplicationCommandInteractionData
+	user             *discordgo.User
+}
+
 var (
 	data     Data
 	treasury *Account
@@ -153,7 +161,7 @@ var (
 				}
 			}
 
-			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name, data_handler.session)
+			sucsess, err, tax := transaction(amount, payer_account, recipiant_account, payer_name, data_handler.session, nil)
 			if !sucsess {
 				create_embed("Payment", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 				return
@@ -209,7 +217,7 @@ var (
 
 			cheese_user.LastPay = time.Now()
 
-			sucsess, err, _ := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session)
+			sucsess, err, _ := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session, data_handler.interaction)
 			if !sucsess {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
@@ -245,7 +253,7 @@ var (
 			}
 
 			org_account := data.OrganisationAccounts[organsiation]
-			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session)
+			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session, nil)
 			if !sucsess {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 				return
@@ -290,123 +298,6 @@ var (
 		"sudo_set_transaction_tax": {AutoCompleteNone},
 	}
 )
-
-// Read the json file - called on init
-func read_data() {
-	// Read the file
-	raw_data, err := ioutil.ReadFile("data.json")
-	if err != nil {
-		log.Fatal(err)
-	}
-	// Unmarshal - convert to a Go struct
-	err = json.Unmarshal(raw_data, &data)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Assign treasury
-	treasury = data.OrganisationAccounts["1000"]
-}
-
-// Save the json file - called on shutdown
-func save_data() {
-	// Marshal / serialise - convert the struct into an array of bytes representing a json string
-	serialised, err := json.Marshal(data)
-	if err != nil {
-		fmt.Println(err)
-	}
-	// Write the file back to the disk
-	err = ioutil.WriteFile("data.json", serialised, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Print("Saving....")
-}
-
-func periodic_save() {
-	for range time.Tick(time.Minute * 1) {
-		save_data()
-	}
-}
-
-// Applies welth tax to a specific account returning the log information for the user
-func apply_wealth_tax_account(account *Account, name string) string {
-	tax := int(math.Ceil(float64(account.Balance) * data.WealthTax / 100))
-	account.Balance -= tax
-	treasury.Balance += tax
-	return fmt.Sprintf("\n%-20s %s", name+":", format_cheesecoins(tax))
-}
-
-// Applies wealth tax. Called every day
-func apply_wealth_tax(session *discordgo.Session) {
-	fmt.Print("Wealth tax.")
-	for id, usr := range data.Users {
-		result := apply_wealth_tax_account(data.PersonalAccounts[usr.PersonalAccount], "Personal")
-		for _, org := range usr.Organisations {
-			account := data.OrganisationAccounts[org]
-			if account != treasury {
-				result += apply_wealth_tax_account(account, data.OrganisationAccounts[org].Name)
-			}
-		}
-
-		send_embed("Wealth Tax", session, id,
-			fmt.Sprintf("Wealth tax has been applied at `%.2f%%`.\n\n**Payments**\n```%s\n```", data.WealthTax, result),
-			[]*discordgo.MessageEmbedField{})
-
-		fmt.Println(result) // Probably send this to the user to notify them of the tax
-	}
-}
-
-func check_wealth_tax(session *discordgo.Session) {
-	for range time.Tick(time.Minute * 1) {
-		if time.Since(data.LastWealthTax).Hours() > 20 {
-			data.LastWealthTax.Add(time.Hour * 24)
-			apply_wealth_tax(session)
-		}
-	}
-}
-
-// Called as the first function to run from this module
-func init() {
-	r, _ := time.Now().MarshalJSON()
-
-	// Parse the bot token as a command line arg from the format `go run . -t [token]`
-	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.Parse()
-
-	// Read the json file
-	read_data()
-
-	go periodic_save()
-
-	fmt.Println(string(r), format_cheesecoins(total_currency()))
-}
-
-// Utility for finding an account that could be a user or an organisation account.
-// Returns the account and a bool for sucsess
-func get_account(id string) (*Account, bool) {
-	val, ok := data.PersonalAccounts[id]
-	if !ok {
-		val, ok = data.OrganisationAccounts[id]
-	}
-	return val, ok
-}
-
-// Format cheesecoins from an int to the decimal format string
-func format_cheesecoins(cheesecoins int) string {
-	return fmt.Sprintf("%.2fcc", float32(cheesecoins)/100)
-}
-
-// If a user with this id has not been saved then create a new user and a new personal account.
-// Should be called before searching for the user data.
-func check_new_user(user *discordgo.User) {
-	if _, isMapContainsKey := data.Users[user.ID]; !isMapContainsKey {
-		data.PersonalAccounts[fmt.Sprint(data.NextPersonal)] = &Account{Name: user.Username, Balance: 0}
-		data.Users[user.ID] = &User{PersonalAccount: fmt.Sprint(data.NextPersonal), Organisations: []string{}}
-		data.NextPersonal += 1
-	}
-}
 
 // Bulk overrides the bot's slash commands and adds new ones.
 func add_commands(session *discordgo.Session) {
@@ -558,6 +449,123 @@ func add_commands(session *discordgo.Session) {
 	}
 }
 
+// Read the json file - called on init
+func read_data() {
+	// Read the file
+	raw_data, err := ioutil.ReadFile("data.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Unmarshal - convert to a Go struct
+	err = json.Unmarshal(raw_data, &data)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Assign treasury
+	treasury = data.OrganisationAccounts["1000"]
+}
+
+// Save the json file - called on shutdown
+func save_data() {
+	// Marshal / serialise - convert the struct into an array of bytes representing a json string
+	serialised, err := json.Marshal(data)
+	if err != nil {
+		fmt.Println(err)
+	}
+	// Write the file back to the disk
+	err = ioutil.WriteFile("data.json", serialised, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Print("Saving....")
+}
+
+func periodic_save() {
+	for range time.Tick(time.Minute * 1) {
+		save_data()
+	}
+}
+
+// Applies welth tax to a specific account returning the log information for the user
+func apply_wealth_tax_account(account *Account, name string) string {
+	tax := int(math.Ceil(float64(account.Balance) * data.WealthTax / 100))
+	account.Balance -= tax
+	treasury.Balance += tax
+	return fmt.Sprintf("\n%-20s %s", name+":", format_cheesecoins(tax))
+}
+
+// Applies wealth tax. Called every day
+func apply_wealth_tax(session *discordgo.Session) {
+	fmt.Print("Wealth tax.")
+	for id, usr := range data.Users {
+		result := apply_wealth_tax_account(data.PersonalAccounts[usr.PersonalAccount], "Personal")
+		for _, org := range usr.Organisations {
+			account := data.OrganisationAccounts[org]
+			if account != treasury {
+				result += apply_wealth_tax_account(account, data.OrganisationAccounts[org].Name)
+			}
+		}
+
+		send_embed("Wealth Tax", session, id,
+			fmt.Sprintf("Wealth tax has been applied at `%.2f%%`.\n\n**Payments**\n```%s\n```", data.WealthTax, result),
+			[]*discordgo.MessageEmbedField{})
+
+		fmt.Println(result) // Probably send this to the user to notify them of the tax
+	}
+}
+
+func check_wealth_tax(session *discordgo.Session) {
+	for range time.Tick(time.Minute * 1) {
+		if time.Since(data.LastWealthTax).Hours() > 20 {
+			data.LastWealthTax = data.LastWealthTax.Add(time.Hour * 24)
+			apply_wealth_tax(session)
+		}
+	}
+}
+
+// Called as the first function to run from this module
+func init() {
+	r, _ := time.Now().MarshalJSON()
+
+	// Parse the bot token as a command line arg from the format `go run . -t [token]`
+	flag.StringVar(&Token, "t", "", "Bot Token")
+	flag.Parse()
+
+	// Read the json file
+	read_data()
+
+	go periodic_save()
+
+	fmt.Println(string(r), format_cheesecoins(total_currency()))
+}
+
+// Utility for finding an account that could be a user or an organisation account.
+// Returns the account and a bool for sucsess
+func get_account(id string) (*Account, bool) {
+	val, ok := data.PersonalAccounts[id]
+	if !ok {
+		val, ok = data.OrganisationAccounts[id]
+	}
+	return val, ok
+}
+
+// Format cheesecoins from an int to the decimal format string
+func format_cheesecoins(cheesecoins int) string {
+	return fmt.Sprintf("%.2fcc", float32(cheesecoins)/100)
+}
+
+// If a user with this id has not been saved then create a new user and a new personal account.
+// Should be called before searching for the user data.
+func check_new_user(user *discordgo.User) {
+	if _, isMapContainsKey := data.Users[user.ID]; !isMapContainsKey {
+		data.PersonalAccounts[fmt.Sprint(data.NextPersonal)] = &Account{Name: user.Username, Balance: 0}
+		data.Users[user.ID] = &User{PersonalAccount: fmt.Sprint(data.NextPersonal), Organisations: []string{}}
+		data.NextPersonal += 1
+	}
+}
+
 // Utility function to create an embed in response to an interaction
 func create_embed(name string, session *discordgo.Session, interaction *discordgo.InteractionCreate, description string, Fields []*discordgo.MessageEmbedField) {
 	embed := &discordgo.MessageEmbed{
@@ -596,48 +604,6 @@ func send_embed(name string, session *discordgo.Session, user string, descriptio
 	} else {
 		session.ChannelMessageSendEmbed(channel.ID, embed)
 	}
-}
-
-func main() {
-	// Create a new Discord session using the provided bot token.
-	session, err := discordgo.New("Bot " + Token)
-	if err != nil {
-		fmt.Println("error creating Discord session,", err)
-		return
-	}
-
-	// Register the interaction func as a callback for InteractionCreate events.
-	session.AddHandler(interactionCreate)
-
-	// Start checking if wealth tax should be applied
-	go check_wealth_tax(session)
-
-	// Only dms
-	session.Identify.Intents = discordgo.IntentsDirectMessages
-
-	// Open a websocket connection to Discord and begin listening.
-	err = session.Open()
-	if err != nil {
-		fmt.Println("error opening connection,", err)
-		return
-	}
-
-	fmt.Println(err)
-
-	// Initalises the slash commands
-	add_commands(session)
-
-	// Wait here until CTRL-C or other term signal is received.
-	fmt.Println("Bot is now running. Press CTRL-C to exit.")
-
-	stop := make(chan os.Signal)
-	signal.Notify(stop, os.Interrupt)
-	<-stop
-	fmt.Println("Closing connection")
-	save_data()
-	// Cleanly close down the Discord session.
-	session.Close()
-
 }
 
 // Utility function for providing a string of an account
@@ -687,7 +653,7 @@ func account_owner(account *Account) string {
 }
 
 // Conducts a transaction. Returns `Sucsess bool`, `error string` and `tax int`
-func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string, session *discordgo.Session) (bool, string, int) {
+func transaction(amount int, payer_account *Account, recipiant_account *Account, payer_name string, session *discordgo.Session, interaction *discordgo.InteractionCreate) (bool, string, int) {
 	// Check for negatives
 	if amount < 0 {
 		return false, "**ERROR:** Cannot pay negative cheesecoins", 0
@@ -708,22 +674,22 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 	if session != nil {
 		recipiant_id := account_owner(recipiant_account)
 
-		send_embed("Payment", session, recipiant_id,
-			fmt.Sprint("You've recieved ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_account.Name,
-				".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```"),
-			[]*discordgo.MessageEmbedField{})
+		text := fmt.Sprint("You've recieved ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_account.Name,
+			".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```")
+		if interaction == nil {
+			send_embed("Payment", session, recipiant_id,
+				text,
+				[]*discordgo.MessageEmbedField{})
+		} else {
+			create_embed("Payment", session, interaction,
+				text,
+				[]*discordgo.MessageEmbedField{})
+		}
 	}
 
 	return true, "", tax
 }
 
-type HandlerData struct {
-	session          *discordgo.Session
-	channel          *discordgo.Channel
-	interaction      *discordgo.InteractionCreate
-	interaction_data discordgo.ApplicationCommandInteractionData
-	user             *discordgo.User
-}
 type option_choice []*discordgo.ApplicationCommandOptionChoice
 
 func (x option_choice) String(i int) string {
@@ -831,4 +797,46 @@ func interactionCreate(session *discordgo.Session, interaction *discordgo.Intera
 		}
 
 	}
+}
+
+func main() {
+	// Create a new Discord session using the provided bot token.
+	session, err := discordgo.New("Bot " + Token)
+	if err != nil {
+		fmt.Println("error creating Discord session,", err)
+		return
+	}
+
+	// Register the interaction func as a callback for InteractionCreate events.
+	session.AddHandler(interactionCreate)
+
+	// Start checking if wealth tax should be applied
+	go check_wealth_tax(session)
+
+	// Only dms
+	session.Identify.Intents = discordgo.IntentsDirectMessages
+
+	// Open a websocket connection to Discord and begin listening.
+	err = session.Open()
+	if err != nil {
+		fmt.Println("error opening connection,", err)
+		return
+	}
+
+	fmt.Println(err)
+
+	// Initalises the slash commands
+	add_commands(session)
+
+	// Wait here until CTRL-C or other term signal is received.
+	fmt.Println("Bot is now running. Press CTRL-C to exit.")
+
+	stop := make(chan os.Signal)
+	signal.Notify(stop, os.Interrupt)
+	<-stop
+	fmt.Println("Closing connection")
+	save_data()
+	// Cleanly close down the Discord session.
+	session.Close()
+
 }
