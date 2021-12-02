@@ -254,6 +254,11 @@ var (
 				return
 			}
 
+			if organisation == "1000" {
+				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the treasury!", []*discordgo.MessageEmbedField{})
+				return
+			}
+
 			org_account := data.OrganisationAccounts[organsiation]
 			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session, nil)
 			if !sucsess {
