@@ -252,7 +252,7 @@ var (
 				return
 			}
 
-			if data.OrganisationAccounts[organisation].Name == "Treasury" {
+			if organisation_name == "Treasury" {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the treasury!", []*discordgo.MessageEmbedField{})
 				return
 			}
