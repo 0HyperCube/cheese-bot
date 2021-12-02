@@ -158,7 +158,7 @@ var (
 				payer_account, _ = get_account(payer)
 				payer_name = payer_account.Name
 				if !user_has_org(data_handler.user, payer, false) {
-					create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own the ", payer_name, " organsiation"), []*discordgo.MessageEmbedField{})
+					create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own the ", payer_name, " organisation"), []*discordgo.MessageEmbedField{})
 					return
 				}
 			}
@@ -175,10 +175,10 @@ var (
 		},
 		"transfer_org": func(data_handler HandlerData) {
 			// Get the organisation
-			organsiation := data_handler.interaction_data.Options[0].StringValue()
-			organisation_name := data.OrganisationAccounts[organsiation].Name
+			organisation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_name := data.OrganisationAccounts[organisation].Name
 
-			if !user_has_org(data_handler.user, organsiation, true) {
+			if !user_has_org(data_handler.user, organisation, true) {
 				create_embed("Transfer organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -187,7 +187,7 @@ var (
 			recipiant := data.Users[data_handler.interaction_data.Options[1].StringValue()]
 			recipiant_name := data.PersonalAccounts[recipiant.PersonalAccount].Name
 
-			recipiant.Organisations = append(recipiant.Organisations, organsiation)
+			recipiant.Organisations = append(recipiant.Organisations, organisation)
 
 			create_embed("Transfer organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
 				"Sucessfully transfered ", organisation_name, " to ", recipiant_name), []*discordgo.MessageEmbedField{})
@@ -226,11 +226,11 @@ var (
 		},
 		"rename_org": func(data_handler HandlerData) {
 			// Get the organisation
-			organsiation := data_handler.interaction_data.Options[0].StringValue()
-			organisation_account := data.OrganisationAccounts[organsiation]
+			organisation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_account := data.OrganisationAccounts[organisation]
 			organisation_name := organisation_account.Name
 
-			if !user_has_org(data_handler.user, organsiation, false) {
+			if !user_has_org(data_handler.user, organisation, false) {
 				create_embed("Rename organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -246,10 +246,10 @@ var (
 			user_account := data.PersonalAccounts[data.Users[data_handler.user.ID].PersonalAccount]
 
 			// Get the organisation
-			organsiation := data_handler.interaction_data.Options[0].StringValue()
-			organisation_name := data.OrganisationAccounts[organsiation].Name
+			organisation := data_handler.interaction_data.Options[0].StringValue()
+			organisation_name := data.OrganisationAccounts[organisation].Name
 
-			if !user_has_org(data_handler.user, organsiation, true) {
+			if !user_has_org(data_handler.user, organisation, true) {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint("**ERROR:** You do not own ", organisation_name), []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -259,14 +259,14 @@ var (
 				return
 			}
 
-			org_account := data.OrganisationAccounts[organsiation]
+			org_account := data.OrganisationAccounts[organisation]
 			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session, nil)
 			if !sucsess {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 				return
 			}
 
-			delete(data.OrganisationAccounts, organsiation)
+			delete(data.OrganisationAccounts, organisation)
 
 			create_embed("Delete organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
 				"Sucessfully deleted ", organisation_name, " all funds have been transfered to your personal account (with ", tax, " in tax)"), []*discordgo.MessageEmbedField{})
