@@ -16,11 +16,12 @@ import (
 )
 
 type User struct {
-	PersonalAccount string
-	SuperUser       bool
-	Mp              bool
-	LastPay         time.Time
-	Organisations   []string
+	PersonalAccount   string
+	SuperUser         bool
+	BankHolidaySetter bool
+	Mp                bool
+	LastPay           time.Time
+	Organisations     []string
 }
 
 type Account struct {
@@ -38,6 +39,7 @@ type Data struct {
 	WealthTax            float64
 	MpPay                int
 	LastWealthTax        time.Time
+	BankHolidays         []time.Time
 }
 
 const (
@@ -284,7 +286,23 @@ var (
 
 			create_embed("Set Transaction Tax", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set transaction tax to ", data.TransactionTax, "%."), []*discordgo.MessageEmbedField{})
 		},
-	}
+		"sudo_set_bank_holiday": func(data_handler HandlerData) {
+			if !data.Users[data_handler.user.ID].BankHolidaySetter {
+				create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, "**ERROR:** You are not a user eligible to set bank holidays", []*discordgo.MessageEmbedField{})
+				return
+			}
+			day := data_handler.interaction_data.Options[0].IntValue()
+			month := data_handler.interaction_data.Options[1].IntValue()
+			enabled := data_handler.interaction_data.Options[2].BoolValue()
+			holiday := time.Date(time.Now().Year(), time.Month(int(month)), int(day), 0, 0, 0, 0, time.Now().Location())
+			if enabled {
+				data.BankHolidays = append(data.BankHolidays, holiday)
+			} else {
+				data.BankHolidays = remove_time(data.BankHolidays, holiday)
+			}
+
+			create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set ", holiday, " to ", enabled, "."), []*discordgo.MessageEmbedField{})
+		}}
 	commandAutocomplete = map[string][]int8{
 		"help":                     {},
 		"balances":                 {},
@@ -296,6 +314,7 @@ var (
 		"delete_org":               {AutoCompleteOwnedOrgs},
 		"sudo_set_wealth_tax":      {AutoCompleteNone},
 		"sudo_set_transaction_tax": {AutoCompleteNone},
+		"sudo_set_bank_holiday":    {AutoCompleteNone, AutoCompleteNone, AutoCompleteNone},
 	}
 )
 
@@ -439,6 +458,31 @@ func add_commands(session *discordgo.Session) {
 					Required:    true,
 				},
 			},
+		}, {
+			Name:        "sudo_set_bank_holiday",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Set the transaction tax rate.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionInteger,
+					Name:        "day",
+					Description: "Day of the month of the bank holiday. e.g. 2 for 2/12/21",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionInteger,
+					Name:        "month",
+					Description: "Month of the bank holiday.",
+					Required:    true,
+					Choices:     months_choices(),
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionBoolean,
+					Name:        "enabled",
+					Description: "If it should be a bank holiday.",
+					Required:    true,
+				},
+			},
 		},
 	}
 
@@ -447,6 +491,26 @@ func add_commands(session *discordgo.Session) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// Removes a time from an array of times
+func remove_time(s []time.Time, value time.Time) []time.Time {
+	result := []time.Time{}
+	for _, v := range s {
+		if v != value {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
+// Generates a command option choice for all the months of the year with values starting at 1.
+func months_choices() []*discordgo.ApplicationCommandOptionChoice {
+	result := make([]*discordgo.ApplicationCommandOptionChoice, 12)
+	for i, v := range []string{"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"} {
+		result[i] = &discordgo.ApplicationCommandOptionChoice{Name: v, Value: i + 1}
+	}
+	return result
 }
 
 // Read the json file - called on init
@@ -730,6 +794,15 @@ func interactionCreate(session *discordgo.Session, interaction *discordgo.Intera
 	switch interaction.Type {
 	case discordgo.InteractionApplicationCommand:
 		fmt.Println("interaction", interaction_data.Name, "interaction", interaction, "From ", user.Username)
+
+		if interaction_data.Name != "sudo_set_bank_holiday" {
+			for _, t := range data.BankHolidays {
+				if time.Since(t) > time.Duration(0) && time.Since(t) < time.Hour*24 {
+					create_embed("Bank Holiday!", handler_data.session, handler_data.interaction, "Today is a bank holiday so no banking must be done.", []*discordgo.MessageEmbedField{})
+					return
+				}
+			}
+		}
 		commandHandlers[interaction_data.Name](handler_data)
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		focused := 0
