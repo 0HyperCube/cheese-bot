@@ -300,13 +300,37 @@ var (
 			month := data_handler.interaction_data.Options[1].IntValue()
 			enabled := data_handler.interaction_data.Options[2].BoolValue()
 			holiday := time.Date(time.Now().Year(), time.Month(int(month)), int(day), 0, 0, 0, 0, time.Now().Location())
+			contains_time := contains_time(data.BankHolidays, holiday)
+
+			result := ""
 			if enabled {
-				data.BankHolidays = append(data.BankHolidays, holiday)
+				if contains_time {
+					result = "is already a bank holiday"
+
+				} else {
+					result = "is now a bank holiday"
+					data.BankHolidays = append(data.BankHolidays, holiday)
+				}
 			} else {
-				data.BankHolidays = remove_time(data.BankHolidays, holiday)
+				if contains_time {
+					result = "is no longer a bank holiday"
+					data.BankHolidays = remove_time(data.BankHolidays, holiday)
+				} else {
+					result = "was already not a bank holiday"
+				}
+
 			}
 
-			create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set ", holiday, " to ", enabled, "."), []*discordgo.MessageEmbedField{})
+			create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, fmt.Sprint("<t:", holiday.Unix(), ":D> ", result, "."), []*discordgo.MessageEmbedField{})
+		},
+		"bank_holidays": func(data_handler HandlerData) {
+			result := "**Bank holidays coming up soon.**"
+
+			for _, t := range data.BankHolidays {
+				result += fmt.Sprint("\n<t:", t.Unix(), ":D> ", result)
+			}
+
+			create_embed("Bank Holidays", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		}}
 	commandAutocomplete = map[string][]int8{
 		"help":                     {},
@@ -320,6 +344,7 @@ var (
 		"sudo_set_wealth_tax":      {AutoCompleteNone},
 		"sudo_set_transaction_tax": {AutoCompleteNone},
 		"sudo_set_bank_holiday":    {AutoCompleteNone, AutoCompleteNone, AutoCompleteNone},
+		"bank_holidays":            {},
 	}
 )
 
@@ -466,12 +491,12 @@ func add_commands(session *discordgo.Session) {
 		}, {
 			Name:        "sudo_set_bank_holiday",
 			Type:        discordgo.ChatApplicationCommand,
-			Description: "Set the transaction tax rate.",
+			Description: "Set a day to be a bank holiday or no longer a bank holiday.",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
 					Type:        discordgo.ApplicationCommandOptionInteger,
 					Name:        "day",
-					Description: "Day of the month of the bank holiday. e.g. 2 for 2/12/21",
+					Description: "Day of the month of the bank holiday. e.g. for 2/12/21 2 is the second day of the month",
 					Required:    true,
 				},
 				{
@@ -488,6 +513,10 @@ func add_commands(session *discordgo.Session) {
 					Required:    true,
 				},
 			},
+		}, {
+			Name:        "bank_holidays",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "List the bank holidays coming up soon.",
 		},
 	}
 
@@ -496,6 +525,16 @@ func add_commands(session *discordgo.Session) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// Checks if a time is in a list of times
+func contains_time(s []time.Time, value time.Time) bool {
+	for _, v := range s {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 // Removes a time from an array of times
