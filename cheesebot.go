@@ -39,7 +39,7 @@ type Data struct {
 	WealthTax            float64
 	MpPay                int
 	LastWealthTax        time.Time
-	BankHolidays         []time.Time
+	BankHolidays         []int64
 }
 
 const (
@@ -211,7 +211,7 @@ var (
 				return
 			}
 			duration := time.Since(cheese_user.LastPay)
-			if duration.Hours() < 18 {
+			if duration.Hours() < 15 {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago"),
 					[]*discordgo.MessageEmbedField{})
 				return
@@ -299,8 +299,8 @@ var (
 			day := data_handler.interaction_data.Options[0].IntValue()
 			month := data_handler.interaction_data.Options[1].IntValue()
 			enabled := data_handler.interaction_data.Options[2].BoolValue()
-			holiday := time.Date(time.Now().Year(), time.Month(int(month)), int(day), 0, 0, 0, 0, time.Now().Location())
-			contains_time := contains_time(data.BankHolidays, holiday)
+			holiday := month<<12 + day
+			contains_time := contains_int64(data.BankHolidays, holiday)
 
 			result := ""
 			if enabled {
@@ -314,20 +314,25 @@ var (
 			} else {
 				if contains_time {
 					result = "is no longer a bank holiday"
-					data.BankHolidays = remove_time(data.BankHolidays, holiday)
+					data.BankHolidays = remove_int64(data.BankHolidays, holiday)
 				} else {
 					result = "was already not a bank holiday"
 				}
 
 			}
 
-			create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, fmt.Sprint("<t:", holiday.Unix(), ":D> ", result, "."), []*discordgo.MessageEmbedField{})
+			create_embed("Set Bank Holiday", data_handler.session, data_handler.interaction, fmt.Sprint(format_date(holiday), " ", result, "."), []*discordgo.MessageEmbedField{})
 		},
 		"bank_holidays": func(data_handler HandlerData) {
-			result := "**Bank holidays coming up soon.**"
 
-			for _, t := range data.BankHolidays {
-				result += fmt.Sprint("\n<t:", t.Unix(), ":D> ", result)
+			result := ""
+			if len(data.BankHolidays) > 0 {
+				for _, t := range data.BankHolidays {
+					result += fmt.Sprint("\nBank holiday on ", format_date(t), " ", result)
+				}
+				fmt.Print("result: ", result)
+			} else {
+				result += "No Bank holidays."
 			}
 
 			create_embed("Bank Holidays", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
@@ -528,7 +533,7 @@ func add_commands(session *discordgo.Session) {
 }
 
 // Checks if a time is in a list of times
-func contains_time(s []time.Time, value time.Time) bool {
+func contains_int64(s []int64, value int64) bool {
 	for _, v := range s {
 		if v == value {
 			return true
@@ -538,14 +543,33 @@ func contains_time(s []time.Time, value time.Time) bool {
 }
 
 // Removes a time from an array of times
-func remove_time(s []time.Time, value time.Time) []time.Time {
-	result := []time.Time{}
+func remove_int64(s []int64, value int64) []int64 {
+	result := []int64{}
 	for _, v := range s {
 		if v != value {
 			result = append(result, v)
 		}
 	}
 	return result
+}
+
+// Converts a date into a month and a day
+func parse_date(value int64) (int64, int64) {
+	month := value >> 12
+	day := value - (month << 12)
+
+	return month, day
+}
+
+// Formats a date in the day/month/year format
+func format_date(value int64) string {
+	month, day := parse_date(value)
+	return fmt.Sprint(day, "/", month, "/", time.Now().Year())
+}
+
+func day_is_date(date int64, current_time time.Time) bool {
+	month, day := parse_date(date)
+	return current_time.Month() == time.Month(month) && current_time.Day() == int(day)
 }
 
 // Generates a command option choice for all the months of the year with values starting at 1.
@@ -839,9 +863,9 @@ func interactionCreate(session *discordgo.Session, interaction *discordgo.Intera
 	case discordgo.InteractionApplicationCommand:
 		fmt.Println("interaction", interaction_data.Name, "interaction", interaction, "From ", user.Username)
 
-		if interaction_data.Name != "sudo_set_bank_holiday" {
+		if interaction_data.Name != "sudo_set_bank_holiday" && interaction_data.Name != "bank_holidays" {
 			for _, t := range data.BankHolidays {
-				if time.Since(t) > time.Duration(0) && time.Since(t) < time.Hour*24 {
+				if day_is_date(t, time.Now()) {
 					create_embed("Bank Holiday!", handler_data.session, handler_data.interaction, "Today is a bank holiday so no banking must be done.", []*discordgo.MessageEmbedField{})
 					return
 				}
