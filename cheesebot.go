@@ -50,6 +50,7 @@ type Data struct {
 	LastWealthTax        time.Time
 	BankHolidays         []int64
 	LoanInterest         float64
+	Banker               string
 }
 
 const (
@@ -380,7 +381,7 @@ var (
 			create_embed("Bank Holidays", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		},
 		"sudo_loan": func(data_handler HandlerData) {
-			if !data.Users[data_handler.user.ID].SuperUser {
+			if data_handler.user.ID != data.Banker {
 				create_embed("Loan", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -402,7 +403,7 @@ var (
 			create_embed("Loan", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		},
 		"sudo_set_interest_rate": func(data_handler HandlerData) {
-			if !data.Users[data_handler.user.ID].SuperUser {
+			if data_handler.user.ID != data.Banker {
 				create_embed("Set Interest Rate", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -428,7 +429,7 @@ var (
 				result += "\nNo loans."
 			}
 
-			if cheese_user.SuperUser {
+			if data_handler.user.ID == data.Banker {
 				result += "\n\n**All loans:**"
 				for _, acc := range data.PersonalAccounts {
 					r, loan := format_loans(acc)
@@ -834,7 +835,7 @@ func loan_callbacks(session *discordgo.Session) {
 					loan.Warning = true
 					send_embed("Loan Due", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
 					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
-					send_embed(fmt.Sprint(user_name, " has a loan due"), session, user, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " which is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
+					send_embed(fmt.Sprint(user_name, " has a loan due"), session, data.Banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " which is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
 
 				})
 			}
@@ -844,7 +845,7 @@ func loan_callbacks(session *discordgo.Session) {
 					loan.Warning = true
 					send_embed("Loan Overdue", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " should have been paid <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. The bank has been notified and may take legal action."), []*discordgo.MessageEmbedField{})
 					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
-					send_embed(fmt.Sprint(user_name, " has an overdue loan"), session, user, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " due <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. Take any legal action you consider necessary."), []*discordgo.MessageEmbedField{})
+					send_embed(fmt.Sprint(user_name, " has an overdue loan"), session, data.Banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " due <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. Take any legal action you consider necessary."), []*discordgo.MessageEmbedField{})
 				})
 			}
 		}
