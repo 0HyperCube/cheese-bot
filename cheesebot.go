@@ -15,6 +15,14 @@ import (
 	"github.com/sahilm/fuzzy"
 )
 
+type Loan struct {
+	Start     time.Time
+	AmountDue int
+	LoanValue int
+	Warning   bool
+	Overdue   bool
+}
+
 type User struct {
 	PersonalAccount   string
 	SuperUser         bool
@@ -27,6 +35,7 @@ type User struct {
 type Account struct {
 	Name    string
 	Balance int
+	Loans   []*Loan
 }
 
 type Data struct {
@@ -40,10 +49,12 @@ type Data struct {
 	MpPay                int
 	LastWealthTax        time.Time
 	BankHolidays         []int64
+	LoanInterest         float64
 }
 
 const (
 	AutoCompleteNonSelfUsers int8 = iota
+	AutoCompleteUsers
 	AutoCompleteAllAccounts
 	AutoCompleteOwnedOrgs
 	AutoCompleteNone
@@ -65,6 +76,7 @@ type HandlerData struct {
 var (
 	data     Data
 	treasury *Account
+	bank     *Account
 
 	commandHandlers = map[string]func(data_handler HandlerData){
 		"help": func(data_handler HandlerData) {
@@ -119,6 +131,31 @@ var (
 					Value:  "Sets the transaction tax rate to [new_tax]%. Can only be done by super user (i.e. head of bank).",
 					Inline: false,
 				},
+				{
+					Name:   "/sudo_set_bank_holiday",
+					Value:  "Set a day to be a bank holiday or no longer a bank holiday.",
+					Inline: false,
+				},
+				{
+					Name:   "/bank_holidays",
+					Value:  "List the bank holidays coming up soon.",
+					Inline: false,
+				},
+				{
+					Name:   "/sudo_loan",
+					Value:  "Loans a account an unrestricted amount of cheesecoin. Can only be done by super user (i.e. head of bank).",
+					Inline: false,
+				},
+				{
+					Name:   "/sudo_set_interest_rate",
+					Value:  "Sets interest rate in percent. Can only be done by super user (i.e. head of bank).",
+					Inline: false,
+				},
+				{
+					Name:   "/view_bank_loans",
+					Value:  "View all the loans you have taken. The head of the bank can see all loans.",
+					Inline: false,
+				},
 			})
 		},
 		"balances": func(data_handler HandlerData) {
@@ -170,7 +207,7 @@ var (
 			}
 
 			create_embed("Payment", data_handler.session, data_handler.interaction, fmt.Sprint("Sucsessfully transfered ", format_cheesecoins(amount), " from ", payer_name, " to ", recipiant_name,
-				".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```"),
+				".\n```\nAmount Payed    ", format_cheesecoins(amount), "\nTax           - ", format_cheesecoins(tax), "\nRecieved      = ", format_cheesecoins(amount-tax), "\n```", err),
 				[]*discordgo.MessageEmbedField{})
 		},
 		"transfer_org": func(data_handler HandlerData) {
@@ -259,6 +296,11 @@ var (
 				return
 			}
 
+			if organisation == "1003" {
+				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the bank!", []*discordgo.MessageEmbedField{})
+				return
+			}
+
 			org_account := data.OrganisationAccounts[organisation]
 			sucsess, err, tax := transaction(org_account.Balance, org_account, user_account, "destroyed organisation", data_handler.session, nil)
 			if !sucsess {
@@ -336,7 +378,80 @@ var (
 			}
 
 			create_embed("Bank Holidays", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
-		}}
+		},
+		"sudo_loan": func(data_handler HandlerData) {
+			if !data.Users[data_handler.user.ID].SuperUser {
+				create_embed("Loan", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			recipiant := data_handler.interaction_data.Options[0].StringValue()
+			recipiant_account, _ := get_account(recipiant)
+
+			// Get the transaction amount
+			float_amount, _ := data_handler.interaction_data.Options[1].Value.(float64)
+			amount := int(float_amount * 100)
+
+			sucsess, result, _ := transaction(amount, bank, recipiant_account, "The Bank", data_handler.session, nil)
+
+			if sucsess {
+				result = fmt.Sprint("A ", format_cheesecoins(amount), " loan has been granted to ", recipiant_account.Name, " with an interest rate of ", fmt.Sprintf("%.2f%%", data.LoanInterest), ".")
+				recipiant_account.Loans = append(recipiant_account.Loans, &Loan{Start: time.Now(), AmountDue: int(math.Ceil(float64(amount) * (data.LoanInterest + 100) / 100)), LoanValue: amount})
+			}
+
+			create_embed("Loan", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
+		},
+		"sudo_set_interest_rate": func(data_handler HandlerData) {
+			if !data.Users[data_handler.user.ID].SuperUser {
+				create_embed("Set Interest Rate", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			data.LoanInterest = data_handler.interaction_data.Options[0].Value.(float64)
+
+			create_embed("Set Interest Rate", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set interest rate to ", data.LoanInterest, "%."), []*discordgo.MessageEmbedField{})
+		},
+		"view_bank_loans": func(data_handler HandlerData) {
+			cheese_user := data.Users[data_handler.user.ID]
+
+			result := "**Your loans:**"
+			r, any_loans := format_loans(data.PersonalAccounts[cheese_user.PersonalAccount])
+			result += r
+			for _, org := range cheese_user.Organisations {
+				r, loan := format_loans(data.OrganisationAccounts[org])
+				result += r
+				if loan {
+					any_loans = true
+				}
+			}
+			if !any_loans {
+				result += "\nNo loans."
+			}
+
+			if cheese_user.SuperUser {
+				result += "\n\n**All loans:**"
+				for _, acc := range data.PersonalAccounts {
+					r, loan := format_loans(acc)
+					result += r
+					if loan {
+						any_loans = true
+					}
+				}
+				for _, acc := range data.OrganisationAccounts {
+					r, loan := format_loans(acc)
+					result += r
+					if loan {
+						any_loans = true
+					}
+				}
+				if !any_loans {
+					result += "\nNo loans."
+				}
+			}
+
+			create_embed("View Loans", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
+		},
+	}
 	commandAutocomplete = map[string][]int8{
 		"help":                     {},
 		"balances":                 {},
@@ -350,8 +465,25 @@ var (
 		"sudo_set_transaction_tax": {AutoCompleteNone},
 		"sudo_set_bank_holiday":    {AutoCompleteNone, AutoCompleteNone, AutoCompleteNone},
 		"bank_holidays":            {},
+		"sudo_loan":                {AutoCompleteAllAccounts, AutoCompleteNone},
+		"sudo_set_interest_rate":   {AutoCompleteNone},
+		"view_bank_loans":          {},
 	}
 )
+
+func format_loans(account *Account) (string, bool) {
+
+	if len(account.Loans) > 0 {
+		result := ""
+		for _, t := range account.Loans {
+			result += fmt.Sprintf("\n**%s** has a loan of **%s** due on %s. **%s** is yet to be paid", account.Name, format_cheesecoins(t.LoanValue), fmt.Sprint("<t:", t.Start.AddDate(0, 0, 7).Unix(), ":f>"), format_cheesecoins(t.AmountDue))
+		}
+		return result, true
+	} else {
+		return "", false
+	}
+
+}
 
 // Bulk overrides the bot's slash commands and adds new ones.
 func add_commands(session *discordgo.Session) {
@@ -522,6 +654,39 @@ func add_commands(session *discordgo.Session) {
 			Name:        "bank_holidays",
 			Type:        discordgo.ChatApplicationCommand,
 			Description: "List the bank holidays coming up soon.",
+		}, {
+			Name:        "sudo_loan",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Loans an account some cheesecoin. Can only be done by super user (i.e. head of bank).",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "recipiant",
+					Description:  "Recipiant of the loan",
+					Required:     true,
+					Autocomplete: true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionType(10), // Float
+					Name:        "amount",
+					Description: "Amount to loan.",
+					Required:    true,
+				},
+			},
+		}, {
+			Name:        "sudo_set_interest_rate",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Sets interest rate in percent. Can only be done by super user (i.e. head of bank).",
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionType(10), // Float
+				Name:        "new_interest",
+				Description: "The new interest rate (0% to 100%).",
+				Required:    true,
+			}},
+		}, {
+			Name:        "view_bank_loans",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "View all the loans you have taken. The head of the bank can see all loans.",
 		},
 	}
 
@@ -594,8 +759,9 @@ func read_data() {
 		log.Fatal(err)
 	}
 
-	// Assign treasury
+	// Assign special organisations
 	treasury = data.OrganisationAccounts["1000"]
+	bank = data.OrganisationAccounts["1003"]
 }
 
 // Save the json file - called on shutdown
@@ -653,6 +819,34 @@ func check_wealth_tax(session *discordgo.Session) {
 		if time.Since(data.LastWealthTax).Hours() > 20 {
 			data.LastWealthTax = data.LastWealthTax.Add(time.Hour * 24)
 			apply_wealth_tax(session)
+		}
+	}
+}
+
+// Adds timers for callbacks on overdue loans.
+func loan_callbacks(session *discordgo.Session) {
+	for _, acc := range data.PersonalAccounts {
+		user := account_owner(acc)
+		for _, loan := range acc.Loans {
+			loan_end := loan.Start.Add(time.Hour * 24 * 7).Unix()
+			if !loan.Warning {
+				time.AfterFunc(time.Until(loan.Start.AddDate(0, 0, 5)), func() {
+					loan.Warning = true
+					send_embed("Loan Due", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
+					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
+					send_embed(fmt.Sprint(user_name, " has a loan due"), session, user, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " which is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
+
+				})
+			}
+			if !loan.Overdue {
+				time.AfterFunc(time.Until(loan.Start.AddDate(0, 0, 7)), func() {
+					loan.Overdue = true
+					loan.Warning = true
+					send_embed("Loan Overdue", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " should have been paid <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. The bank has been notified and may take legal action."), []*discordgo.MessageEmbedField{})
+					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
+					send_embed(fmt.Sprint(user_name, " has an overdue loan"), session, user, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " due <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. Take any legal action you consider necessary."), []*discordgo.MessageEmbedField{})
+				})
+			}
 		}
 	}
 }
@@ -799,6 +993,36 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 	// Calculate tax
 	tax := int(math.Ceil(float64(amount) * data.TransactionTax / 100))
 
+	// Handle paying back a loan
+	loan_text := ""
+	fmt.Println("Trns ", recipiant_account.Name, bank.Name)
+	if recipiant_account == bank {
+		fmt.Println("Paying bank.")
+		if len(payer_account.Loans) > 0 {
+			fmt.Println("Paying loan.")
+			loan_text += "\n\n**Loan contributions**:"
+			amount_left := amount - tax
+			for {
+				if amount_left >= payer_account.Loans[0].AmountDue {
+					loan_text += fmt.Sprint("\n", format_cheesecoins(payer_account.Loans[0].AmountDue), " payed off a loan of ", format_cheesecoins(payer_account.Loans[0].LoanValue), " from <t:", payer_account.Loans[0].Start.Unix(), ":f>")
+					amount_left -= payer_account.Loans[0].AmountDue
+					payer_account.Loans = payer_account.Loans[1:]
+				} else {
+					if amount_left > 0 {
+						loan_text += fmt.Sprint("\n", format_cheesecoins(amount_left), " towards a loan of ", format_cheesecoins(payer_account.Loans[0].LoanValue), " from <t:", payer_account.Loans[0].Start.Unix(), ":f>. ", format_cheesecoins(payer_account.Loans[0].LoanValue-amount_left), " is remaining from this loan.")
+						payer_account.Loans[0].AmountDue -= amount_left
+						amount_left = 0
+					}
+					break
+				}
+				if len(payer_account.Loans) == 0 {
+					break
+				}
+			}
+		}
+	}
+	fmt.Println("loan text", loan_text)
+
 	payer_account.Balance -= amount
 	recipiant_account.Balance += amount - tax
 	treasury.Balance += tax
@@ -819,7 +1043,7 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 		}
 	}
 
-	return true, "", tax
+	return true, loan_text, tax
 }
 
 type option_choice []*discordgo.ApplicationCommandOptionChoice
@@ -914,6 +1138,13 @@ func interactionCreate(session *discordgo.Session, interaction *discordgo.Intera
 					index++
 				}
 			}
+		case AutoCompleteUsers:
+			index := 0
+			values = make(option_choice, len(data.PersonalAccounts))
+			for id, other_user := range data.Users {
+				values[index] = &discordgo.ApplicationCommandOptionChoice{Name: data.PersonalAccounts[other_user.PersonalAccount].Name + " (Person)", Value: id}
+				index++
+			}
 		}
 
 		if len(values) > 0 {
@@ -953,6 +1184,9 @@ func main() {
 
 	// Start checking if wealth tax should be applied
 	go check_wealth_tax(session)
+
+	// Messages on late loans
+	loan_callbacks(session)
 
 	// Only dms
 	session.Identify.Intents = discordgo.IntentsDirectMessages
