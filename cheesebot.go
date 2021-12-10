@@ -234,7 +234,7 @@ var (
 			name := data_handler.interaction_data.Options[0].StringValue()
 
 			data.Users[data_handler.user.ID].Organisations = append(data.Users[data_handler.user.ID].Organisations, fmt.Sprint(data.NextOrg))
-			data.OrganisationAccounts[fmt.Sprint(data.NextOrg)] = &Account{Name: name, Balance: 0}
+			data.OrganisationAccounts[fmt.Sprint(data.NextOrg)] = &Account{Name: name, Balance: 0, Loans: []*Loan{}}
 			data.NextOrg += 1
 
 			create_embed("Create organisation", data_handler.session, data_handler.interaction, fmt.Sprint(
@@ -887,7 +887,7 @@ func format_cheesecoins(cheesecoins int) string {
 // Should be called before searching for the user data.
 func check_new_user(user *discordgo.User) {
 	if _, isMapContainsKey := data.Users[user.ID]; !isMapContainsKey {
-		data.PersonalAccounts[fmt.Sprint(data.NextPersonal)] = &Account{Name: user.Username, Balance: 0}
+		data.PersonalAccounts[fmt.Sprint(data.NextPersonal)] = &Account{Name: user.Username, Balance: 0, Loans: []*Loan{}}
 		data.Users[user.ID] = &User{PersonalAccount: fmt.Sprint(data.NextPersonal), Organisations: []string{}}
 		data.NextPersonal += 1
 	}
@@ -1207,7 +1207,7 @@ func main() {
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running. Press CTRL-C to exit.")
 
-	stop := make(chan os.Signal)
+	stop := make(chan os.Signal, 2)
 	signal.Notify(stop, os.Interrupt)
 	<-stop
 	fmt.Println("Closing connection")
