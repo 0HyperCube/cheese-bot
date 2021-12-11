@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"time"
@@ -50,7 +51,7 @@ type Data struct {
 	LastWealthTax        time.Time
 	BankHolidays         []int64
 	LoanInterest         float64
-	Banker               string
+	CasinoReturns        float64
 }
 
 const (
@@ -76,8 +77,9 @@ type HandlerData struct {
 
 var (
 	data     Data
-	treasury *Account
-	bank     *Account
+	treasury string
+	bank     string
+	casino   string
 
 	commandHandlers = map[string]func(data_handler HandlerData){
 		"help": func(data_handler HandlerData) {
@@ -155,6 +157,15 @@ var (
 				{
 					Name:   "/view_bank_loans",
 					Value:  "View all the loans you have taken. The head of the bank can see all loans.",
+					Inline: false,
+				},
+				{
+					Name:   "/gamble",
+					Value:  "Gamble [cheesecoins] on [number] being roled (1-6 dice)",
+					Inline: false,
+				}, {
+					Name:   "/gambling_set_returns",
+					Value:  "Set the returns on the gambling. Only avaliable to the owner of the casino.",
 					Inline: false,
 				},
 			})
@@ -257,7 +268,7 @@ var (
 
 			cheese_user.LastPay = time.Now()
 
-			sucsess, err, _ := transaction(data.MpPay, treasury, data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session, data_handler.interaction)
+			sucsess, err, _ := transaction(data.MpPay, data.OrganisationAccounts[treasury], data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session, data_handler.interaction)
 			if !sucsess {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
@@ -292,13 +303,18 @@ var (
 				return
 			}
 
-			if organisation == "1000" {
+			if organisation == treasury {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the treasury!", []*discordgo.MessageEmbedField{})
 				return
 			}
 
-			if organisation == "1003" {
+			if organisation == bank {
 				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the bank!", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			if organisation == casino {
+				create_embed("Delete organisation", data_handler.session, data_handler.interaction, "**ERROR:** You cannot delete the casino! It is to important.", []*discordgo.MessageEmbedField{})
 				return
 			}
 
@@ -381,7 +397,7 @@ var (
 			create_embed("Bank Holidays", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		},
 		"sudo_loan": func(data_handler HandlerData) {
-			if data_handler.user.ID != data.Banker {
+			if !user_has_org(data_handler.user, bank, false) {
 				create_embed("Loan", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -393,7 +409,7 @@ var (
 			float_amount, _ := data_handler.interaction_data.Options[1].Value.(float64)
 			amount := int(float_amount * 100)
 
-			sucsess, result, _ := transaction(amount, bank, recipiant_account, "The Bank", data_handler.session, nil)
+			sucsess, result, _ := transaction(amount, data.OrganisationAccounts[bank], recipiant_account, "The Bank", data_handler.session, nil)
 
 			if sucsess {
 				result = fmt.Sprint("A ", format_cheesecoins(amount), " loan has been granted to ", recipiant_account.Name, " with an interest rate of ", fmt.Sprintf("%.2f%%", data.LoanInterest), ".")
@@ -403,7 +419,7 @@ var (
 			create_embed("Loan", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		},
 		"sudo_set_interest_rate": func(data_handler HandlerData) {
-			if data_handler.user.ID != data.Banker {
+			if !user_has_org(data_handler.user, bank, false) {
 				create_embed("Set Interest Rate", data_handler.session, data_handler.interaction, "**ERROR:** You are not a super user", []*discordgo.MessageEmbedField{})
 				return
 			}
@@ -429,7 +445,7 @@ var (
 				result += "\nNo loans."
 			}
 
-			if data_handler.user.ID == data.Banker {
+			if user_has_org(data_handler.user, bank, false) {
 				result += "\n\n**All loans:**"
 				for _, acc := range data.PersonalAccounts {
 					r, loan := format_loans(acc)
@@ -452,6 +468,54 @@ var (
 
 			create_embed("View Loans", data_handler.session, data_handler.interaction, result, []*discordgo.MessageEmbedField{})
 		},
+		"gamble": func(data_handler HandlerData) {
+			// Get the transaction amount
+			float_amount, _ := data_handler.interaction_data.Options[0].Value.(float64)
+			amount := int(float_amount * 100)
+
+			cheese_account := data.PersonalAccounts[data.Users[data_handler.user.ID].PersonalAccount]
+
+			if amount > cheese_account.Balance {
+				create_embed("Gamble", data_handler.session, data_handler.interaction, "**ERROR:** You do not have enough funds.", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			winnings := int(float64(amount) * (data.CasinoReturns - 1))
+
+			if winnings > data.OrganisationAccounts[casino].Balance {
+				create_embed("Gamble", data_handler.session, data_handler.interaction, "**ERROR:** The casino does not have enough funds.", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			// Get the dice
+			predicted_dice := int(data_handler.interaction_data.Options[1].IntValue())
+			actual_dice := rand.Intn(5) + 1
+
+			title := "Gambling Loss"
+			description := ""
+			if predicted_dice == actual_dice {
+				title = "Gambling Victory"
+
+				description = fmt.Sprint("You predicted a 🎲", predicted_dice, " and the computer rolled a 🎲", actual_dice, ". You have won ", format_cheesecoins(winnings), " which will be transfered to your account shortly.")
+				transaction(winnings, data.OrganisationAccounts[casino], cheese_account, "Casino", data_handler.session, nil)
+			} else {
+				description = fmt.Sprint("You predicted a 🎲", predicted_dice, " and the computer rolled a 🎲", actual_dice, ". You have lost ", format_cheesecoins(amount), ".")
+				transaction(amount, cheese_account, data.OrganisationAccounts[casino], cheese_account.Name, data_handler.session, nil)
+			}
+
+			create_embed(title, data_handler.session, data_handler.interaction, description, []*discordgo.MessageEmbedField{})
+
+		},
+		"gambling_set_returns": func(data_handler HandlerData) {
+			if !user_has_org(data_handler.user, casino, false) {
+				create_embed("Gambling Set Returns", data_handler.session, data_handler.interaction, "**ERROR:** You are not the casino owner.", []*discordgo.MessageEmbedField{})
+				return
+			}
+
+			data.CasinoReturns = data_handler.interaction_data.Options[0].Value.(float64)
+
+			create_embed("Gambling Set Returns", data_handler.session, data_handler.interaction, fmt.Sprint("Sucessfully set gambling returns to ", data.CasinoReturns, "."), []*discordgo.MessageEmbedField{})
+		},
 	}
 	commandAutocomplete = map[string][]int8{
 		"help":                     {},
@@ -469,6 +533,8 @@ var (
 		"sudo_loan":                {AutoCompleteAllAccounts, AutoCompleteNone},
 		"sudo_set_interest_rate":   {AutoCompleteNone},
 		"view_bank_loans":          {},
+		"gamble":                   {AutoCompleteNone, AutoCompleteNone},
+		"gambling_set_returns":     {AutoCompleteNone},
 	}
 )
 
@@ -688,6 +754,35 @@ func add_commands(session *discordgo.Session) {
 			Name:        "view_bank_loans",
 			Type:        discordgo.ChatApplicationCommand,
 			Description: "View all the loans you have taken. The head of the bank can see all loans.",
+		}, {
+			Name:        "gamble",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Gamble [cheesecoins] on [number] being roled (1-6 dice) at the casino.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionType(10), // Float
+					Name:        "cheesecoin",
+					Description: "Amount of cheesecoins",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionInteger,
+					Name:        "number",
+					Description: "The number you are betting on.",
+					Required:    true,
+					Choices:     dice_choices(),
+				},
+			},
+		}, {
+			Name:        "gambling_set_returns",
+			Type:        discordgo.ChatApplicationCommand,
+			Description: "Set the returns on the gambling. Only avaliable to the owner of the casino.",
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionType(10), // Float
+				Name:        "returns",
+				Description: "Returns from win.",
+				Required:    true,
+			}},
 		},
 	}
 
@@ -747,6 +842,15 @@ func months_choices() []*discordgo.ApplicationCommandOptionChoice {
 	return result
 }
 
+// Generates a command option choice for numbers from 1 - 6
+func dice_choices() []*discordgo.ApplicationCommandOptionChoice {
+	result := make([]*discordgo.ApplicationCommandOptionChoice, 6)
+	for i := 0; i < 6; i++ {
+		result[i] = &discordgo.ApplicationCommandOptionChoice{Name: fmt.Sprint(i + 1), Value: i + 1}
+	}
+	return result
+}
+
 // Read the json file - called on init
 func read_data() {
 	// Read the file
@@ -761,8 +865,9 @@ func read_data() {
 	}
 
 	// Assign special organisations
-	treasury = data.OrganisationAccounts["1000"]
-	bank = data.OrganisationAccounts["1003"]
+	treasury = "1000"
+	bank = "1003"
+	casino = "1023"
 }
 
 // Save the json file - called on shutdown
@@ -791,7 +896,7 @@ func periodic_save() {
 func apply_wealth_tax_account(account *Account, name string) string {
 	tax := int(math.Ceil(float64(account.Balance) * data.WealthTax / 100))
 	account.Balance -= tax
-	treasury.Balance += tax
+	data.OrganisationAccounts[treasury].Balance += tax
 	return fmt.Sprintf("\n%-20s %s", name+":", format_cheesecoins(tax))
 }
 
@@ -802,7 +907,7 @@ func apply_wealth_tax(session *discordgo.Session) {
 		result := apply_wealth_tax_account(data.PersonalAccounts[usr.PersonalAccount], "Personal")
 		for _, org := range usr.Organisations {
 			account := data.OrganisationAccounts[org]
-			if account != treasury {
+			if account != data.OrganisationAccounts[treasury] {
 				result += apply_wealth_tax_account(account, data.OrganisationAccounts[org].Name)
 			}
 		}
@@ -830,12 +935,13 @@ func loan_callbacks(session *discordgo.Session) {
 		user := account_owner(acc)
 		for _, loan := range acc.Loans {
 			loan_end := loan.Start.Add(time.Hour * 24 * 7).Unix()
+			banker := account_owner(data.OrganisationAccounts[bank])
 			if !loan.Warning {
 				time.AfterFunc(time.Until(loan.Start.AddDate(0, 0, 5)), func() {
 					loan.Warning = true
 					send_embed("Loan Due", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
 					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
-					send_embed(fmt.Sprint(user_name, " has a loan due"), session, data.Banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " which is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
+					send_embed(fmt.Sprint(user_name, " has a loan due"), session, banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " which is due <t:", loan_end, ":R>. ", format_cheesecoins(loan.AmountDue), " is yet to be paid."), []*discordgo.MessageEmbedField{})
 
 				})
 			}
@@ -845,7 +951,7 @@ func loan_callbacks(session *discordgo.Session) {
 					loan.Warning = true
 					send_embed("Loan Overdue", session, user, fmt.Sprint("Your loan of ", format_cheesecoins(loan.LoanValue), " should have been paid <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. The bank has been notified and may take legal action."), []*discordgo.MessageEmbedField{})
 					user_name := data.PersonalAccounts[data.Users[user].PersonalAccount].Name
-					send_embed(fmt.Sprint(user_name, " has an overdue loan"), session, data.Banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " due <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. Take any legal action you consider necessary."), []*discordgo.MessageEmbedField{})
+					send_embed(fmt.Sprint(user_name, " has an overdue loan"), session, banker, fmt.Sprint(user_name, " has a loan of ", format_cheesecoins(loan.LoanValue), " due <t:", loan_end, ":R> but ", format_cheesecoins(loan.AmountDue), " is yet to be paid. Take any legal action you consider necessary."), []*discordgo.MessageEmbedField{})
 				})
 			}
 		}
@@ -854,6 +960,8 @@ func loan_callbacks(session *discordgo.Session) {
 
 // Called as the first function to run from this module
 func init() {
+	rand.Seed(time.Now().UnixNano())
+
 	r, _ := time.Now().MarshalJSON()
 
 	// Parse the bot token as a command line arg from the format `go run . -t [token]`
@@ -996,8 +1104,7 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 
 	// Handle paying back a loan
 	loan_text := ""
-	fmt.Println("Trns ", recipiant_account.Name, bank.Name)
-	if recipiant_account == bank {
+	if recipiant_account == data.OrganisationAccounts[bank] {
 		fmt.Println("Paying bank.")
 		if len(payer_account.Loans) > 0 {
 			fmt.Println("Paying loan.")
@@ -1026,7 +1133,7 @@ func transaction(amount int, payer_account *Account, recipiant_account *Account,
 
 	payer_account.Balance -= amount
 	recipiant_account.Balance += amount - tax
-	treasury.Balance += tax
+	data.OrganisationAccounts[treasury].Balance += tax
 
 	if session != nil {
 		recipiant_id := account_owner(recipiant_account)
