@@ -30,6 +30,7 @@ type User struct {
 	BankHolidaySetter bool
 	Mp                bool
 	LastPay           time.Time
+	PayStreak         int
 	Organisations     []string
 }
 
@@ -47,7 +48,6 @@ type Data struct {
 	NextOrg              int
 	TransactionTax       float64
 	WealthTax            float64
-	MpPay                int
 	LastWealthTax        time.Time
 	BankHolidays         []int64
 	LoanInterest         float64
@@ -264,11 +264,16 @@ var (
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, fmt.Sprint("You can claim this benefit only once per day. You have last claimed it ", duration.Round(time.Second).String(), " ago"),
 					[]*discordgo.MessageEmbedField{})
 				return
+			} else if duration.Hours() > 33 {
+				cheese_user.PayStreak = 0
 			}
 
 			cheese_user.LastPay = time.Now()
 
-			sucsess, err, _ := transaction(data.MpPay, data.OrganisationAccounts[treasury], data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session, data_handler.interaction)
+			sucsess, err, _ := transaction(int(math.Min(5., math.Pow(1.1, float64(cheese_user.PayStreak)))*100), data.OrganisationAccounts[treasury], data.PersonalAccounts[cheese_user.PersonalAccount], "Treasury", data_handler.session, data_handler.interaction)
+
+			cheese_user.PayStreak += 1
+
 			if !sucsess {
 				create_embed("Rollcall", data_handler.session, data_handler.interaction, err, []*discordgo.MessageEmbedField{})
 			}
