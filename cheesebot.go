@@ -503,6 +503,7 @@ var (
 
 				description = fmt.Sprint("You predicted a 🎲", predicted_dice, " and the computer rolled a 🎲", actual_dice, ". You have won ", format_cheesecoins(winnings), " which will be transfered to your account shortly.")
 				transaction(winnings, data.OrganisationAccounts[casino], cheese_account, "Casino", data_handler.session, nil)
+				send_embed("Casino payout", data_handler.session, account_owner(data.OrganisationAccounts[casino]), fmt.Sprint(cheese_account.Name, " has won ", format_cheesecoins(winnings), " at your casino."), []*discordgo.MessageEmbedField{})
 			} else {
 				description = fmt.Sprint("You predicted a 🎲", predicted_dice, " and the computer rolled a 🎲", actual_dice, ". You have lost ", format_cheesecoins(amount), ".")
 				transaction(amount, cheese_account, data.OrganisationAccounts[casino], cheese_account.Name, data_handler.session, nil)
